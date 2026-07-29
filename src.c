@@ -86,6 +86,11 @@ void solve_lqr(workspace* wrk, f64* x, f64* u);
 void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su);
 void get_lqr_qr(workspace* wrk);
 void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, u32 m);
+void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void trsv(f64* x, f64* L, u32 n, u32 stride);
+void trsv_t(f64* x, f64* L, u32 n, u32 stride);
+f64 dot(f64* v, f64* w, u32 n);
 void swap(f64** a, f64** b);
 
 void solve(workspace* wrk) {
@@ -133,18 +138,9 @@ void solve_dual_qp(workspace* wrk) {
     for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->b_wrk[i];
 
     // Solve L y = -d
-    for (u32 i=0; i<n_active; ++i) {
-        wrk->p[i] /= wrk->L[i*wrk->nc + i];
-        for (u32 j=i+1; j<n_active; ++j) 
-            wrk->p[j] -= wrk->L[j*wrk->nc + i] * wrk->p[i];
-    }
-
+    trsv(wrk->p, wrk->L, n_active, wrk->nc);
     // Solve L'p = y
-    for (i32 i=n_active-1; i>=0; --i) {
-        wrk->p[i] /= wrk->L[i*wrk->nc + i];
-        for (i32 j=i-1; j>=0; --j)
-            wrk->p[j] -= wrk->L[i*wrk->nc + j] * wrk->p[i];
-    }
+    trsv_t(wrk->p, wrk->L, n_active, wrk->nc);
 }
 
 void get_descent_dir(workspace* wrk) {
@@ -154,17 +150,13 @@ void get_descent_dir(workspace* wrk) {
     // Solve LL'p = 0, p != 0. Assume L_{n_active, n_active} = 0.
     memset(wrk->p, 0, n_active*sizeof(f64));
     wrk->p[n_active-1] = 1.0;
-    wrk->p[n_active-2] = -wrk->L[(n_active-1)*nc + n_active-2];
-    for (i32 i=n_active-2; i>=0; i--) {
-        wrk->p[i] /= wrk->L[i*nc + i];
-        for (i32 j=i-1; j>=0; j--)
-            wrk->p[j] -= wrk->L[i*nc + j] * wrk->p[i];
-    }
+    for (u32 i=0; i<n_active-1; ++i)
+        wrk->p[i] = -wrk->L[(n_active-1)*nc + i];
+    trsv_t(wrk->p, wrk->L, n_active-1, nc);
 
     // Enforce p' b < 0.
-    f64 dot = 0.0;
-    for (u32 i=0; i<n_active; ++i) dot += wrk->p[i] * wrk->b_wrk[i];
-    if (dot > ZERO_TOL) {
+    f64 dotv = dot(wrk->p, wrk->b_wrk, n_active);
+    if (dotv > ZERO_TOL) {
         for (u32 i=0; i<n_active; ++i) wrk->p[i] *= -1.0;
     }
 }
@@ -175,10 +167,10 @@ u32 drop_component(f64* xi, f64* p, u32 n) {
             xi + t*p = 0 \iff
             t = -xi / p
     */
-    f64 t = 1.0;
-    f64 argmin = -1;
+    f64 t = INFINITY;
+    u32 argmin = 0;
     for (u32 i=0; i<n; ++i) {
-        if (p[i] > ZERO_TOL) continue;
+        if (p[i] > -ZERO_TOL) continue;
         f64 tau = - xi[i] / p[i];
         if (tau < t) {
             t = tau;
@@ -279,12 +271,12 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     map = wrk->as.active_u;
     for (u32 t=0; t<wrk->N; ++t)
         for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
-            if (map[i] > xi_idx) map[i] -= 1;
+            if (map[2*t*nc + i] > xi_idx) map[i] -= 1;
     nc = wrk->mx;
     map = wrk->as.active_x;
     for (u32 t=0; t<wrk->N; ++t)
         for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
-            if (map[i] > xi_idx) map[i] -= 1;
+            if (map[2*t*nc + i] > xi_idx) map[i] -= 1;
 
     // Compact xi.
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
@@ -297,7 +289,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         H = M M', M = [CU; DX]
         where:
             - CU[t, k] = C Lu[t]^{-T} if t=k, -C K[t]Acl[t-1] .. Acl[k] B if k < t.
-            - DX[t, k] = D Acl[t-1] ... Acl[k] B if k <= t.
+            - DX[t, k] = D Acl[t] ... Acl[k] B if k <= t.
 
         1) We first compute the approprate row of CU or DX.
         2) We then compute it's product with M.
@@ -318,13 +310,9 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         
         // Compute B' Di
         memset(m_ptr, 0, nu*sizeof(f64));
-        for (u32 j=0; j<nx; ++j)
-            for (u32 i=0; i<nu; ++i) m_ptr[i] += wrk->B[t*nx*nu + j*nu + i] * tmp1[j];
+        fma_mv_t(m_ptr, wrk->B + t*nx*nu, tmp1, nu, nx, nu);
         // Solve Lu x = B' Di
-        for (u32 i=0; i<nu; ++i) {
-            m_ptr[i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i] * m_ptr[i];
-        }
+        trsv(m_ptr, wrk->Lu + t*nu*nu, nu, nu);
         // walk back along row of M.
         m_ptr -= nu;
 
@@ -332,35 +320,25 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         for (i32 tau=t-1; tau>=0; --tau) {
             // state = Acl[tau]' state
             memset(tmp2, 0, nx*sizeof(f64));
-            for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[(tau+1)*nx*nx + j*nx + i] * tmp1[j];
+            fma_mv_t(tmp2, wrk->Acl+(tau+1)*nx*nx, tmp1, nx, nx, nx);
             swap(&tmp1, &tmp2);
 
             // Compute B' state
             memset(m_ptr, 0, nu*sizeof(f64));
-            for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nu; ++i) m_ptr[i] += wrk->B[tau*nx*nu + j*nu + i] * tmp1[j];
+            fma_mv_t(m_ptr, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
             // Solve Lu x = B' state
-            for (u32 i=0; i<nu; ++i) {
-                m_ptr[i] /= wrk->Lu[tau*nu*nu + i*nu + i];
-                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i] * m_ptr[i];
-            }
+            trsv(m_ptr, wrk->Lu+tau*nu*nu, nu, nu);
             // walk back along row of M.
             m_ptr -= nu;            
         }
     } else { // Need DU
         memcpy(m_ptr, wrk->C + constr->idx*nu, nu*sizeof(f64));
-        for (u32 i=0; i<nu; ++i) {
-            m_ptr[i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i] * m_ptr[i];
-        }
+        trsv(m_ptr, wrk->Lu+nu*nu*t, nu, nu);
         
         // Initialize backward recursion state.
         if (t>0) {
             memset(tmp1, 0, nx*sizeof(f64));
-            for (u32 j=0; j<nu; ++j)
-                for (u32 i=0; i<nx; ++i) tmp1[i] -= wrk->K[t*nu*nx + j*nx+i] *
-                                                    wrk->C[constr->idx*nu + j];
+            fma_mv_t(tmp1, wrk->K+t*nu*nx, wrk->C+constr->idx*nu, nx, nu, nx);
         }
         // Walk back along row of M.
         m_ptr -= nu;
@@ -369,20 +347,15 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         for (i32 tau=t-1; tau>=0; --tau) {
             // Compute B' state
             memset(m_ptr, 0, nu*sizeof(f64));
-            for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nu; ++i) m_ptr[i] += wrk->B[tau*nx*nu + j*nu + i] * tmp1[j];
+            fma_mv_t(m_ptr, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
             // Solve Lu x = B' state
-            for (u32 i=0; i<nu; ++i) {
-                m_ptr[i] /= wrk->Lu[tau*nu*nu + i*nu + i];
-                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i] * m_ptr[i];
-            }
+            trsv(m_ptr, wrk->Lu+tau*nu*nu, nu, nu);
             // walk back along row of M.
             m_ptr -= nu;  
 
             // state = Acl[tau]' state
             memset(tmp2, 0, nx*sizeof(f64));
-            for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[j];
+            fma_mv_t(tmp2, wrk->Acl+tau*nx*nx, tmp1, nx, nx, nx);
             swap(&tmp1, &tmp2);          
         }
     }
@@ -393,26 +366,17 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     */
     memset(wrk->L + n_active*wrk->nc, 0, (n_active+1)*sizeof(f64));
     m_ptr = wrk->M + n_active*N*nu;
-    for (u32 i=0; i<n_active; ++i)
-        for (u32 j=0; j<N*nu; ++j) wrk->L[n_active*wrk->nc+i] += 
-                                    wrk->M[i*N*nu + j] * m_ptr[j]; 
-    for (u32 i=0; i<N*nu; ++i)
-        wrk->L[n_active*wrk->nc + n_active] += PW2(m_ptr[i]);
+    fma_mv(wrk->L + n_active+wrk->nc, wrk->M, m_ptr, n_active, N*nu, N*nu);
+    wrk->L[n_active*wrk->nc + n_active] = dot(m_ptr, m_ptr, N*nu);
 }
 
 void update_dH_chol_add(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     // Solve
-    for (u32 i=0; i<n_active; ++i) {
-        wrk->L[n_active*wrk->nc + i] /= wrk->L[i*wrk->nc + i];
-        for (u32 j=i+1; j<n_active; ++j)
-            wrk->L[n_active*wrk->nc + j] -= wrk->L[j*wrk->nc + i] * wrk->L[n_active*wrk->nc + i];
-    }
-
+    trsv(wrk->L + n_active*wrk->nc, wrk->L, n_active, wrk->nc);
     // Diagonal
-    for (u32 i=0; i<n_active; ++i)
-        wrk->L[n_active*wrk->nc + n_active] -= wrk->L[n_active*wrk->nc + i] *
-                                               wrk->L[n_active*wrk->nc + i];
+    wrk->L[n_active*wrk->nc + n_active] -= 
+            dot(wrk->L+n_active*wrk->nc, wrk->L+n_active*wrk->nc, n_active);
     if (wrk->L[n_active*wrk->nc + n_active] < ZERO_TOL) {
         wrk->dH_singular = 1;
         wrk->L[n_active*wrk->nc + n_active] = 0.0;
@@ -548,25 +512,17 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
             Compute u = - (R + B'PB)^{-1}(r + B'p)
         */
         for (u32 i=0; i<nu; ++i) u[t*nu + i] = -wrk->r_wrk[t*nu + i];
-        for (u32 j=0; j<nx; ++j) 
-            for (u32 i=0; i<nu; ++i) u[t*nu + i] -= wrk->B[t*nu*nx + j*nu + i] * tmp1[j];
-        for (u32 i=0; i<nu; ++i) {
-            u[t*nu + i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) u[t*nu + j] -= wrk->Lu[t*nu*nu + j*nu + i] * u[t*nu + i];
-        }
-        for (i32 i=nu-1; i>=0; i--) {
-            u[t*nu + i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (i32 j=i-1; j>=0; j--) u[t*nu + j] -= wrk->Lu[t*nu*nu + i*nu + j] * u[t*nu + i];
-        }
+        fma_mv_t(u+t*nu, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
+        trsv(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
+        trsv_t(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
 
         if (t==0) break;
         /*
             Compute p = (A - BK)' p - K'r + q 
         */
         for (u32 i=0; i<nx; ++i) tmp2[i] = wrk->q_wrk[(t-1)*nx + i];
-        for (u32 j=0; j<nx; ++j)
-            for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[t*nx*nx + j*nx + i] * tmp1[j];
-        for (u32 i=0; i<nx; ++i) tmp1[i] = tmp2[i];
+        fma_mv_t(tmp2, wrk->Acl+t*nx*nx, tmp1, nx, nx, nx);
+        swap(&tmp1, &tmp2);
         for (u32 j=0; j<nu; ++j) 
             for (u32 i=0; i<nx; ++i) tmp1[i] -= wrk->K[t*nx*nu + j*nx + i] * wrk->r_wrk[t*nu + j];
     }
@@ -582,10 +538,8 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
         /*
             x = Ax + Bu
         */
-        for (u32 i=0; i<nx; ++i) {
-            for (u32 j=0; j<nx; ++j) x[t*nx+nx+i] += wrk->A[t*nx*nx+i*nx+j] * x[t*nx+j];
-            for (u32 j=0; j<nu; ++j) x[t*nx+nx+i] += wrk->B[t*nx*nu+i*nu+j] * u[t*nu+j];
-        }
+        fma_mv(x+t*nx+nx, wrk->A+t*nx*nx, x+t*nx, nx, nx, nx);
+        fma_mv(x+t*nx*nx, wrk->B+t*nx*nu, u+t*nu, nx, nu, nu);
     }
 }
 
@@ -601,17 +555,8 @@ void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su) {
     memset(sx, 0, N*mx*sizeof(f64));
 
     for (u32 t=0; t<wrk->N; ++t) {
-        /*
-            su = C u
-        */
-        for (u32 i=0; i<mu; ++i)
-            for (u32 j=0; j<nu; ++j) su[t*mu + i] += wrk->C[i*nu + j] * u[t*nu + j];
-
-        /*
-            sx = D x
-        */
-        for (u32 i=0; i<mx; ++i) 
-            for (u32 j=0; j<nx; ++j) sx[t*mx + i] += wrk->D[nx*i + j] * x[t*nx + nx + j]; 
+        fma_mv(su+t*mu, wrk->C, u+t*nu, mu, nu, nu);
+        fma_mv(sx+t*mx, wrk->D, x+t*nx*nx+nx, mx, nx, nx);
     }
 }
 
@@ -640,6 +585,35 @@ void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, 
                 ref[t*n + j] += mat[mat_idx*n + j] * xi[xi_idx];
         }
     }
+}
+
+void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
+    for (u32 i=0; i<ny; ++i)
+        for (u32 j=0; j<nx; ++j) y[i] += A[i*stride + j] * x[j];
+}
+
+void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
+    for (u32 i=0; i<nx; ++i)
+        for (u32 j=0; j<ny; ++j) y[j] += A[i*stride + j] * x[i];
+}
+
+void trsv(f64* x, f64* L, u32 n, u32 stride) {
+    for (u32 i=0; i<n; ++i) {
+        x[i] /= L[i*stride + i];
+        for (u32 j=i+1; j<n; ++j) x[j] -= L[j*stride + i] * x[i];
+    }
+}
+
+void trsv_t(f64* x, f64* L, u32 n, u32 stride) {
+    for (i32 i=n-1; i>=0; --i) {
+        x[i] /= L[i*stride + i];
+        for (i32 j=i-1; j>=0; --j) x[j] -= L[i*stride + j] * x[i];
+    }
+}
+
+f64 dot(f64* v, f64* w, u32 n) {
+    f64 acc = 0.0;
+    for (u32 i=0; i<n; ++i) acc += v[i] * w[i];
 }
 
 void swap(f64** a, f64** b) {
