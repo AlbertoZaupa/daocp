@@ -9,11 +9,12 @@ typedef int32_t i32;
 #define ZERO_TOL 1e-15
 #define SOLVED 1
 #define INFEASIBLE 2
+#define MAX_ITER 3
 #define PW2(x) x*x
 
 typedef struct {
-    u32 t;
-    u32 idx;
+    i32 t;
+    i32 idx;
     u32 is_state;
 } constraint_t;
 
@@ -85,11 +86,11 @@ void solve_lqr(workspace* wrk, f64* x, f64* u);
 void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su);
 void get_lqr_qr(workspace* wrk);
 void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, u32 m);
-void swap(f64* a, f64* b);
+void swap(f64** a, f64** b);
 
 void solve(workspace* wrk) {
     constraint_t constr;
-    u32 removed_constr;
+    i32 removed_constr;
 
     for (u32 k=0; k<wrk->max_iter; ++k) {
         if (!wrk->dH_singular) {
@@ -116,6 +117,8 @@ void solve(workspace* wrk) {
             remove_constraint(wrk, removed_constr);
         }
     }
+    
+    wrk->return_status = MAX_ITER;
 }
 
 void solve_dual_qp(workspace* wrk) {
@@ -146,13 +149,14 @@ void get_descent_dir(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     u32 nc = wrk->nc;
 
-    // Solve LL'x = 0, x != 0. Assume L_{n_active, n_active} = 0.
+    // Solve LL'p = 0, p != 0. Assume L_{n_active, n_active} = 0.
     memset(wrk->p, 0, n_active*sizeof(f64));
-    wrk->p[n_active-1] = wrk->L[(n_active-1)*nc + n_active-2];
+    wrk->p[n_active-1] = 1.0;
+    wrk->p[n_active-2] = wrk->L[(n_active-1)*nc + n_active-2];
     for (i32 i=n_active-2; i>=0; i--) {
         wrk->p[i] /= wrk->L[i*nc + i];
         for (i32 j=i-1; j>=0; j--)
-            wrk->p[j] -= wrk->L[i*nc + j];
+            wrk->p[j] -= wrk->L[i*nc + j] * wrk->p[i];
     }
 
     // Enforce p' b < 0.
@@ -173,7 +177,7 @@ u32 drop_component(f64* xi, f64* p, u32 n) {
     f64 argmin = -1;
     for (u32 i=0; i<n; ++i) {
         if (p[i] > ZERO_TOL) continue;
-        f64 tau = p[i] / (p[i] - xi[i]);
+        f64 tau = xi[i] / (xi[i] - p[i]);
         if (tau < t) {
             t = tau;
             argmin = i;
@@ -190,11 +194,11 @@ void add_constraint(workspace* wrk, constraint_t* constr) {
         Update dual linear term
     */
     if (constr->is_state) {
-        wrk->b_wrk[wrk->as.n_active+1] = 
-            wrk->d[constr->idx] + wrk->sx_lqr[constr->t*wrk->mx + constr->idx];
+        wrk->b_wrk[wrk->as.n_active] = 
+            wrk->d[constr->idx] - wrk->sx_lqr[constr->t*wrk->mx + constr->idx];
     } else {
-        wrk->b_wrk[wrk->as.n_active+1] = 
-            wrk->c[constr->idx] + wrk->su_lqr[constr->t*wrk->mu + constr->idx];
+        wrk->b_wrk[wrk->as.n_active] = 
+            wrk->c[constr->idx] - wrk->su_lqr[constr->t*wrk->mu + constr->idx];
     }
 
     update_working_set_add(wrk, constr);
@@ -221,14 +225,14 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     // Update ( t -> active constraints ) map.
     if (constr->is_state) {
         u32 i=0;
-        for (; i<wrk->mx && wrk->as.active_x[t*2*wrk->mx + i] >= 0; i+=2);
+        for (; i<2*wrk->mx && wrk->as.active_x[t*2*wrk->mx + i] >= 0; i+=2);
         wrk->as.active_x[t*2*wrk->mx + i] = wrk->as.n_active;
-        wrk->as.active_x[t*2*wrk->mx + i] = idx;
+        wrk->as.active_x[t*2*wrk->mx + i + 1] = idx;
     } else {
         u32 i=0;
-        for (; i<wrk->mu && wrk->as.active_u[t*2*wrk->mu + i] >= 0; i+=2);
+        for (; i<2*wrk->mu && wrk->as.active_u[t*2*wrk->mu + i] >= 0; i+=2);
         wrk->as.active_u[t*2*wrk->mu + i] = wrk->as.n_active;
-        wrk->as.active_u[t*2*wrk->mu + i] = idx;
+        wrk->as.active_u[t*2*wrk->mu + i + 1] = idx;
     }
 
     // Update ( xi_idx -> constraint ) map.
@@ -236,6 +240,7 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     wrk->as.xi2con[3*wrk->as.n_active+1] = idx;
     wrk->as.xi2con[3*wrk->as.n_active+2] = constr->is_state;
 
+    wrk->xi[wrk->as.n_active] = 0.0;
     wrk->as.n_active += 1;
 }
 
@@ -246,7 +251,7 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     u32 is_state = wrk->as.xi2con[xi_idx*3+2];
 
     // Update (xi_idx -> constraint info) map.
-    for (u32 i=idx+1; i<wrk->as.n_active; ++i) {
+    for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) {
         wrk->as.xi2con[(i-1)*3] = wrk->as.xi2con[i*3]; 
         wrk->as.xi2con[(i-1)*3+1] = wrk->as.xi2con[i*3+1]; 
         wrk->as.xi2con[(i-1)*3+2] = wrk->as.xi2con[i*3+2]; 
@@ -298,18 +303,18 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         // Solve Lu x = B' Di
         for (u32 i=0; i<nu; ++i) {
             m_ptr[i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i];
+            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i] * m_ptr[i];
         }
         // walk back along row of M.
         m_ptr -= nu;
 
         // Propagate through Acl recursion state
-        for (i32 tau=t-1; tau>0; --tau) {
+        for (i32 tau=t-1; tau>=0; --tau) {
             // state = Acl[tau]' state
-            memset(tmp2, 0, nu*sizeof(f64));
+            memset(tmp2, 0, nx*sizeof(f64));
             for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[i];
-            swap(tmp1, tmp2);
+                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[j];
+            swap(&tmp1, &tmp2);
 
             // Compute B' state
             memset(m_ptr, 0, nu*sizeof(f64));
@@ -318,7 +323,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
             // Solve Lu x = B' state
             for (u32 i=0; i<nu; ++i) {
                 m_ptr[i] /= wrk->Lu[tau*nu*nu + i*nu + i];
-                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i];
+                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i] * m_ptr[i];
             }
             // walk back along row of M.
             m_ptr -= nu;            
@@ -327,7 +332,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         memcpy(m_ptr, wrk->C + constr->idx*nu, nu*sizeof(f64));
         for (u32 i=0; i<nu; ++i) {
             m_ptr[i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i];
+            for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[t*nu*nu + j*nu + i] * m_ptr[i];
         }
         
         // Initialize backward recursion state.
@@ -341,13 +346,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         m_ptr -= nu;
         
         // Start recursion
-        for (i32 tau=t-1; tau>0; --tau) {
-            // state = Acl[tau]' state
-            memset(tmp2, 0, nu*sizeof(f64));
-            for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[i];
-            swap(tmp1, tmp2);
-
+        for (i32 tau=t-1; tau>=0; --tau) {
             // Compute B' state
             memset(m_ptr, 0, nu*sizeof(f64));
             for (u32 j=0; j<nx; ++j)
@@ -355,21 +354,30 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
             // Solve Lu x = B' state
             for (u32 i=0; i<nu; ++i) {
                 m_ptr[i] /= wrk->Lu[tau*nu*nu + i*nu + i];
-                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i];
+                for (u32 j=i+1; j<nu; ++j) m_ptr[j] -= wrk->Lu[tau*nu*nu + j*nu + i] * m_ptr[i];
             }
             // walk back along row of M.
-            m_ptr -= nu;            
+            m_ptr -= nu;  
+
+            // state = Acl[tau]' state
+            memset(tmp2, 0, nx*sizeof(f64));
+            for (u32 j=0; j<nx; ++j)
+                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[j];
+            swap(&tmp1, &tmp2);          
         }
     }
 
     /*
-        Computation of new row of dH. Given by M' m.
+        Computation of new row of dH. Given by (M' m, m'm).
         Write result into new row of L.
     */
-    memset(wrk->L + n_active*wrk->nc, 0, wrk->nc*sizeof(f64));
+    memset(wrk->L + n_active*wrk->nc, 0, (n_active+1)*sizeof(f64));
     m_ptr = wrk->M + n_active*N*nu;
     for (u32 i=0; i<n_active; ++i)
-        for (u32 j=0; j<N*nu; ++j) m_ptr[i] += wrk->M[i*N*nu + j] * m_ptr[j]; 
+        for (u32 j=0; j<N*nu; ++j) wrk->L[n_active*wrk->nc+i] += 
+                                    wrk->M[i*N*nu + j] * m_ptr[j]; 
+    for (u32 i=0; i<n_active; ++i)
+        wrk->L[n_active*wrk->nc + n_active] += PW2(m_ptr[i]);
 }
 
 void update_dH_chol_add(workspace* wrk) {
@@ -413,6 +421,7 @@ void update_dH_chol_remove(workspace* wrk, u32 idx) {
     for (u32 i=idx; i<n_active-1; ++i) {
         lii = wrk->L[i*nc+i];
         lii_new = sqrt(PW2(lii) + PW2(l[i-idx])); 
+        wrk->L[i*nc+i] = lii_new;
         a = l[i-idx] / lii_new;
         b = lii / lii_new;
         for (u32 j=i+1; j<n_active-1; ++j) {
@@ -420,6 +429,8 @@ void update_dH_chol_remove(workspace* wrk, u32 idx) {
             wrk->L[j*nc + i] *= b;
         }
     }
+
+    wrk->dH_singular = 0;
 }
 
 u32 is_dual_feasible(f64* p, u32 n) {
@@ -427,7 +438,7 @@ u32 is_dual_feasible(f64* p, u32 n) {
         Check that all components are non-negative.   
     */
     for (u32 i=0; i<n; ++i) {
-        if (p[i] < ZERO_TOL) return 0;
+        if (p[i] < -ZERO_TOL) return 0;
     }
     return 1;
 }
@@ -491,7 +502,7 @@ void get_violated_constraint(workspace* wrk, constraint_t* constr) {
 
 u32 check_infeasibility(f64* p, u32 n) {
     for (u32 i=0; i<n; ++i)
-        if (p[i] < ZERO_TOL) return 0;
+        if (p[i] < -ZERO_TOL) return 0;
 
     return 1; 
 }
@@ -516,14 +527,14 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
         */
         for (u32 i=0; i<nu; ++i) u[t*nu + i] = -wrk->r_wrk[t*nu + i];
         for (u32 j=0; j<nx; ++j) 
-            for (u32 i=0; i<nu; ++i) u[t*nu + i] -= wrk->B[j*nu + i] * tmp1[i];
+            for (u32 i=0; i<nu; ++i) u[t*nu + i] -= wrk->B[t*nu*nx + j*nu + i] * tmp1[j];
         for (u32 i=0; i<nu; ++i) {
             u[t*nu + i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (u32 j=i+1; j<nu; ++j) u[t*nu + j] -= wrk->Lu[t*nu*nu + j*nu + i];
+            for (u32 j=i+1; j<nu; ++j) u[t*nu + j] -= wrk->Lu[t*nu*nu + j*nu + i] * u[t*nu + i];
         }
         for (i32 i=nu-1; i>=0; i--) {
             u[t*nu + i] /= wrk->Lu[t*nu*nu + i*nu + i];
-            for (i32 j=i-1; j>=0; j--) u[t*nu + j] -= wrk->Lu[t*nu*nu + i*nu + j];
+            for (i32 j=i-1; j>=0; j--) u[t*nu + j] -= wrk->Lu[t*nu*nu + i*nu + j] * u[t*nu + i];
         }
 
         if (t==0) break;
@@ -531,8 +542,8 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
             Compute p = (A - BK)' p - K'r + q 
         */
         for (u32 i=0; i<nx; ++i) tmp2[i] = wrk->q_wrk[(t-1)*nx + i];
-        for (u32 i=0; i<nx; ++i)
-            for (u32 j=0; j<nx; ++j) tmp2[i] += wrk->Acl[t*nx*nx + i*nx + j] * tmp1[j];
+        for (u32 j=0; j<nx; ++j)
+            for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[t*nx*nx + j*nx + i] * tmp1[j];
         for (u32 i=0; i<nx; ++i) tmp1[i] = tmp2[i];
         for (u32 j=0; j<nu; ++j) 
             for (u32 i=0; i<nx; ++i) tmp1[i] -= wrk->K[t*nx*nu + j*nx + i] * wrk->r_wrk[t*nu + j];
@@ -551,7 +562,7 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
         */
         for (u32 i=0; i<nx; ++i) {
             for (u32 j=0; j<nx; ++j) x[t*nx+nx+i] += wrk->A[t*nx*nx+i*nx+j] * x[t*nx+j];
-            for (u32 j=0; j<nu; ++j) x[t*nx+nx+i] += wrk->B[t*nx*nx+i*nu+j] * u[t*nu+j];
+            for (u32 j=0; j<nu; ++j) x[t*nx+nx+i] += wrk->B[t*nx*nu+i*nu+j] * u[t*nu+j];
         }
     }
 }
@@ -578,7 +589,7 @@ void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su) {
             sx = D x
         */
         for (u32 i=0; i<mx; ++i) 
-            for (u32 j=0; j<nx; ++j) sx[t*mx + i] += wrk->D[nx*i + j] * x[t*nx + j]; 
+            for (u32 j=0; j<nx; ++j) sx[t*mx + i] += wrk->D[nx*i + j] * x[t*nx + nx + j]; 
     }
 }
 
@@ -598,8 +609,8 @@ void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, 
     for (u32 t=0; t<N; ++t) {
         for (u32 i=0; i<2*m; i+=2) {
             // Retrieve dual variable
-            u32 xi_idx = map[t*m + i];
-            u32 mat_idx = map[t*m + i + 1];
+            i32 xi_idx = map[2*t*m + i];
+            u32 mat_idx = map[2*t*m + i + 1];
             if (xi_idx < 0) break;
             
             // Accumulate ref += mat[mat_idx]' * dual_var
@@ -609,8 +620,8 @@ void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, 
     }
 }
 
-void swap(f64* a, f64* b) {
-    u32 tmp = *a;
+void swap(f64** a, f64** b) {
+    f64* tmp = *a;
     *a = *b;
     *b = tmp;
 }
