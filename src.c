@@ -104,6 +104,8 @@ void solve(workspace* wrk) {
                 }
                 add_constraint(wrk, &constr); 
             } else {
+                // Form descent direction
+                for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
                 removed_constr = drop_component(wrk->xi, wrk->p, wrk->as.n_active);
                 remove_constraint(wrk, removed_constr);
             }
@@ -152,7 +154,7 @@ void get_descent_dir(workspace* wrk) {
     // Solve LL'p = 0, p != 0. Assume L_{n_active, n_active} = 0.
     memset(wrk->p, 0, n_active*sizeof(f64));
     wrk->p[n_active-1] = 1.0;
-    wrk->p[n_active-2] = wrk->L[(n_active-1)*nc + n_active-2];
+    wrk->p[n_active-2] = -wrk->L[(n_active-1)*nc + n_active-2];
     for (i32 i=n_active-2; i>=0; i--) {
         wrk->p[i] /= wrk->L[i*nc + i];
         for (i32 j=i-1; j>=0; j--)
@@ -170,20 +172,20 @@ void get_descent_dir(workspace* wrk) {
 u32 drop_component(f64* xi, f64* p, u32 n) {
     /*
         Line search along p < 0:
-            xi + t(p-xi) = 0 \iff
-            t = xi / (xi-p)
+            xi + t*p = 0 \iff
+            t = -xi / p
     */
     f64 t = 1.0;
     f64 argmin = -1;
     for (u32 i=0; i<n; ++i) {
         if (p[i] > ZERO_TOL) continue;
-        f64 tau = xi[i] / (xi[i] - p[i]);
+        f64 tau = - xi[i] / p[i];
         if (tau < t) {
             t = tau;
             argmin = i;
         }
     }
-    for (u32 i=0; i<n; ++i) xi[i] += t*(p[i]-xi[i]);
+    for (u32 i=0; i<n; ++i) xi[i] += t*p[i];
     return argmin;
 }
 
@@ -257,18 +259,36 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
         wrk->as.xi2con[(i-1)*3+2] = wrk->as.xi2con[i*3+2]; 
     }
 
-    // Update (t -> active constraints) map.
+    /* 
+        Update (t -> active constraints) map.
+    */
+    // Remove xi_idx entry from active_x/u.
     i32* map = is_state ? wrk->as.active_x : wrk->as.active_u;
     u32 nc = is_state ? wrk->mx : wrk->mu;
     map += t*2*nc;
     u32 i = 0;
-    for (i=0; i<2*nc && map[i] != idx; i+=2) ;
+    for (i=0; i<2*nc && map[i] != xi_idx; i+=2) ;
     for (; i<2*(nc-1) && map[i] != -1; i+=2) {
         map[i] = map[i+2];
         map[i+1] = map[i+3];
     }
     map[2*(nc-1)] = map[2*nc-1] = -1;
 
+    // Update active_x/u to reflect new xi indexing;
+    nc = wrk->mu;
+    map = wrk->as.active_u;
+    for (u32 t=0; t<wrk->N; ++t)
+        for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
+            if (map[i] > xi_idx) map[i] -= 1;
+    nc = wrk->mx;
+    map = wrk->as.active_x;
+    for (u32 t=0; t<wrk->N; ++t)
+        for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
+            if (map[i] > xi_idx) map[i] -= 1;
+
+    // Compact xi.
+    for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
+        wrk->xi[i-1] = wrk->xi[i];
     wrk->as.n_active -= 1;
 }
 
@@ -289,7 +309,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     u32 nu = wrk->nu;
     u32 n_active = wrk->as.n_active;
     u32 t = constr->t;
-    memset(wrk->M + N*nu*n_active, 0, N*nu*n_active*sizeof(f64));
+    memset(wrk->M + N*nu*n_active, 0, N*nu*sizeof(f64));
     f64* m_ptr = wrk->M + N*nu*n_active + t*nu;
     
     if (constr->is_state) { // Need DX
@@ -313,7 +333,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
             // state = Acl[tau]' state
             memset(tmp2, 0, nx*sizeof(f64));
             for (u32 j=0; j<nx; ++j)
-                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[tau*nx*nx + j*nx + i] * tmp1[j];
+                for (u32 i=0; i<nx; ++i) tmp2[i] += wrk->Acl[(tau+1)*nx*nx + j*nx + i] * tmp1[j];
             swap(&tmp1, &tmp2);
 
             // Compute B' state
@@ -376,7 +396,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     for (u32 i=0; i<n_active; ++i)
         for (u32 j=0; j<N*nu; ++j) wrk->L[n_active*wrk->nc+i] += 
                                     wrk->M[i*N*nu + j] * m_ptr[j]; 
-    for (u32 i=0; i<n_active; ++i)
+    for (u32 i=0; i<N*nu; ++i)
         wrk->L[n_active*wrk->nc + n_active] += PW2(m_ptr[i]);
 }
 
@@ -407,12 +427,12 @@ void update_dH_chol_remove(workspace* wrk, u32 idx) {
 
     // Remove row at idx.
     for (u32 i=idx+1; i<n_active; ++i)
-        memcpy(wrk->L+(i-1)*nc, wrk->L+i*nc, i*sizeof(f64));
+        memcpy(wrk->L+(i-1)*nc, wrk->L+i*nc, (i+1)*sizeof(f64));
 
     // Extract column[idx] at l. Fix bottom-right lower triangle
     for (u32 i=idx; i<n_active-1; ++i) {
         l[i-idx] = wrk->L[i*nc + idx];
-        for (u32 j=idx+1; j<n_active; ++j)
+        for (u32 j=idx+1; j<=i+1; ++j)
             wrk->L[i*nc + j-1] = wrk->L[i*nc + j];
     }
 
@@ -425,8 +445,10 @@ void update_dH_chol_remove(workspace* wrk, u32 idx) {
         a = l[i-idx] / lii_new;
         b = lii / lii_new;
         for (u32 j=i+1; j<n_active-1; ++j) {
-            l[j-idx] = l[j-idx] * b - wrk->L[j*nc + i] * a;
-            wrk->L[j*nc + i] *= b;
+            lii = l[j-idx];
+            lii_new = wrk->L[j*nc + i];
+            l[j-idx] = lii * b - lii_new * a;
+            wrk->L[j*nc + i] = b * lii_new + a * lii;
         }
     }
 
@@ -456,10 +478,10 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
 
 void get_violated_constraint(workspace* wrk, constraint_t* constr) {
     // Return most violated constraint
-    u32 tu = -1;
-    u32 tx = -1;
-    u32 idxu = -1;
-    u32 idxx = -1;
+    i32 tu = -1;
+    i32 tx = -1;
+    i32 idxu = -1;
+    i32 idxx = -1;
     f64 maxu = -1;
     f64 maxx = -1;
 
