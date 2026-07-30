@@ -676,8 +676,8 @@ void workspace_init(
     u32 nfloats = 3*N*nx*nx + // A, P, Acl
                   2*N*nx*nu + // B, K
                   N*nu*nu +   // Lu
-                  4*N*nx+2*nx + // q, q_wrk, x, x_lqr
-                  6*N*nu +    // u, u_lqr, r, r_wrk, w, w_ul
+                  5*N*nx+2*nx + // q, q_wrk, x, x_lqr, w
+                  5*N*nu +    // u, u_lqr, r, r_wrk, w_ul
                   5*nc +      // sx, su, sx_lqr, su_lqr, xi, p, b_wrk
                   ncx*nx+ncu*nu + // D, C
                   ncx+ncu +       // d, c
@@ -688,7 +688,7 @@ void workspace_init(
 
     wrk->memory = malloc(
         nfloats*sizeof(f64) +
-        (2*ncx + 2*ncu)*sizeof(u32) + // mx, cummx, mu, cummu
+        4*N*sizeof(u32) + // mx, cummx, mu, cummu
         nc*sizeof(u32) +              // active_set.as_members
         (2*ncx + 2*ncu)*sizeof(i32) + // active_set.active_x/active_u
         nc*sizeof(constraint_t)       // active_set.xi2con
@@ -700,7 +700,7 @@ void workspace_init(
     wrk->B = mem; mem+=N*nx*nu;
     wrk->K = mem; mem+=N*nx*nu;
     wrk->Lu = mem; mem+=N*nu*nu;
-    wrk->w = mem; mem+=N*nu;
+    wrk->w = mem; mem+=N*nx;
     wrk->w_ul = mem; mem+=N*nu;
     wrk->x = mem; mem+=N*nx+nx;
     wrk->x_lqr = mem; mem+=N*nx+nx;
@@ -725,11 +725,11 @@ void workspace_init(
     wrk->M = mem; mem+=nc*N*nu;
     wrk->tmp1 = mem; mem+=(nc > nx ? nc : nx);
     wrk->tmp2 = mem; mem+=nx;
-    void* vmem = (void*) mem;
-    wrk->mx = (u32*) vmem; vmem+=ncx*sizeof(u32);
-    wrk->cummx = (u32*) vmem; vmem+=ncx*sizeof(u32);
-    wrk->mu = (u32*) vmem; vmem+=ncu*sizeof(u32);
-    wrk->cummu = (u32*) vmem; vmem+=ncu*sizeof(u32);
+    unsigned char* vmem = (unsigned char*) mem;
+    wrk->mx = (u32*) vmem; vmem+=N*sizeof(u32);
+    wrk->cummx = (u32*) vmem; vmem+=N*sizeof(u32);
+    wrk->mu = (u32*) vmem; vmem+=N*sizeof(u32);
+    wrk->cummu = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
     wrk->as.active_x = (i32*) vmem; vmem+=2*ncx*sizeof(i32); 
     wrk->as.active_u = (i32*) vmem; vmem+=2*ncu*sizeof(i32); 
@@ -740,8 +740,9 @@ void workspace_init(
     wrk->nx = nx;
     wrk->nu = nu;
     wrk->nc = nc;
-    memcpy(wrk->mx, mx, N*sizeof(f64));
-    memcpy(wrk->mu, mu, N*sizeof(f64));
+    wrk->max_iter = max_iter;
+    memcpy(wrk->mx, mx, N*sizeof(u32));
+    memcpy(wrk->mu, mu, N*sizeof(u32));
 
     // Compute prexif sums of mx and mu.
     u32 sumx = 0;
@@ -774,17 +775,17 @@ void workspace_init(
 
     // Initialize LQR/Riccati data
     solve_riccati(wrk, R);
+    get_lqr_qr(wrk);
     solve_lqr(wrk, wrk->x_lqr, wrk->u_lqr);
     get_Cu_Dx(wrk, wrk->x_lqr, wrk->u_lqr, wrk->sx_lqr, wrk->su_lqr);
 }
 
 void workspace_free(workspace* wrk) {
     free(wrk->memory);
-    free(wrk);
 }
 
 void solve_riccati(workspace* wrk, f64* R) {
-
+    // To be implemented.
 }
 
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
