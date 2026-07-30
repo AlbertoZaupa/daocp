@@ -48,10 +48,12 @@ typedef struct {
     f64* d;
     f64* A;
     f64* B;
+    f64* w;
     f64* Lu;
     f64* K;
     f64* P;
     f64* Acl;
+    f64* w_ul;
     f64* x_lqr;
     f64* u_lqr;
     f64* sx_lqr;
@@ -518,16 +520,17 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
     f64* tmp1 = wrk->tmp1;
     f64* tmp2 = wrk->tmp2;
 
-    memset(x + nx, 0, N*nx*sizeof(f64));
+    // Initialize states with disturbances
+    memcpy(x + nx, wrk->w, N*nx*sizeof(f64));
     // Initialize costate
     memcpy(tmp1, wrk->q_wrk + (N-1)*nx, nx*sizeof(f64)); 
 
     // Backward recursion
     for (i32 t=N-1; t>=0; t--) {
         /*
-            Compute u = - (R + B'PB)^{-1}(r + B'p)
+            Compute u = - (R + B'PB)^{-1}(r + B'p + w_ul)
         */
-        for (u32 i=0; i<nu; ++i) u[t*nu + i] = wrk->r_wrk[t*nu + i];
+        for (u32 i=0; i<nu; ++i) u[t*nu + i] = wrk->r_wrk[t*nu + i] + wrk->w_ul[t*nu];
         fma_mv_t(u+t*nu, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
         negate(u + t*nu, nu);
         trsv(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
@@ -553,7 +556,7 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
             for (u32 j=0; j<nx; ++j) u[t*nu + i] -= wrk->K[t*nu*nx + i*nx + j] * x[t*nx + j];
         
         /*
-            x = Ax + Bu
+            x = Ax + Bu + w
         */
         fma_mv(x+t*nx+nx, wrk->A+t*nx*nx, x+t*nx, nx, nx, nx);
         fma_mv(x+t*nx+nx, wrk->B+t*nx*nu, u+t*nu, nx, nu, nu);
