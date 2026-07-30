@@ -6,10 +6,11 @@ typedef uint32_t u32;
 typedef double f64;
 typedef int32_t i32;
 
-#define ZERO_TOL 1e-15
+#define ZERO_TOL 1e-12
 #define SOLVED 1
 #define INFEASIBLE 2
 #define MAX_ITER 3
+#define ILL_CONDITIONED 4
 #define PW2(x) x*x
 
 typedef struct {
@@ -21,7 +22,8 @@ typedef struct {
 typedef struct {
     i32* active_u; // For each time-index: (xi index active at t, corresponding constraint index).
     i32* active_x;
-    u32* xi2con; // For each dual variable, the corresponding constraint.
+    constraint_t* xi2con; // For each dual variable, the corresponding constraint.
+    u32* as_members;
     u32 n_active;
 } active_set;
 
@@ -69,7 +71,7 @@ typedef struct {
 
 void solve(workspace* wrk);
 void solve_dual_qp(workspace* wrk);
-void get_descent_dir(workspace* wrk);
+u32 get_descent_dir(workspace* wrk);
 u32 drop_component(f64* xi, f64* p, u32 n);
 void add_constraint(workspace* wrk, constraint_t* constr);
 void remove_constraint(workspace* wrk, u32 idx);
@@ -86,10 +88,14 @@ void solve_lqr(workspace* wrk, f64* x, f64* u);
 void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su);
 void get_lqr_qr(workspace* wrk);
 void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, u32 m);
+u32 is_active(workspace* wrk, constraint_t* constr);
+void set_active(workspace* wrk, constraint_t* constr);
+void set_inactive(workspace* wrk, constraint_t* constr);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
 void trsv_t(f64* x, f64* L, u32 n, u32 stride);
+void negate(f64* v, u32 n);
 f64 dot(f64* v, f64* w, u32 n);
 void swap(f64** a, f64** b);
 
@@ -115,7 +121,10 @@ void solve(workspace* wrk) {
                 remove_constraint(wrk, removed_constr);
             }
         } else {
-            get_descent_dir(wrk);
+            if (get_descent_dir(wrk)) {
+                wrk->return_status = ILL_CONDITIONED;
+                return;
+            }
             if (check_infeasibility(wrk->p, wrk->as.n_active)) {
                 wrk->return_status = INFEASIBLE;
                 return;
@@ -143,7 +152,7 @@ void solve_dual_qp(workspace* wrk) {
     trsv_t(wrk->p, wrk->L, n_active, wrk->nc);
 }
 
-void get_descent_dir(workspace* wrk) {
+u32 get_descent_dir(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     u32 nc = wrk->nc;
 
@@ -156,9 +165,10 @@ void get_descent_dir(workspace* wrk) {
 
     // Enforce p' b < 0.
     f64 dotv = dot(wrk->p, wrk->b_wrk, n_active);
-    if (dotv > ZERO_TOL) {
-        for (u32 i=0; i<n_active; ++i) wrk->p[i] *= -1.0;
-    }
+    if (dotv >= -ZERO_TOL && dotv <= ZERO_TOL) return 1;
+    if (dotv > ZERO_TOL)
+        negate(wrk->p, n_active);
+    return 0;
 }
 
 u32 drop_component(f64* xi, f64* p, u32 n) {
@@ -215,9 +225,10 @@ void remove_constraint(workspace* wrk, u32 idx) {
 void update_working_set_add(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
+    u32 is_state = constr->is_state;
 
     // Update ( t -> active constraints ) map.
-    if (constr->is_state) {
+    if (is_state) {
         u32 i=0;
         for (; i<2*wrk->mx && wrk->as.active_x[t*2*wrk->mx + i] >= 0; i+=2);
         wrk->as.active_x[t*2*wrk->mx + i] = wrk->as.n_active;
@@ -230,26 +241,22 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     }
 
     // Update ( xi_idx -> constraint ) map.
-    wrk->as.xi2con[3*wrk->as.n_active] = t;
-    wrk->as.xi2con[3*wrk->as.n_active+1] = idx;
-    wrk->as.xi2con[3*wrk->as.n_active+2] = constr->is_state;
+    wrk->as.xi2con[wrk->as.n_active] = (constraint_t) {t, idx, is_state};
 
     wrk->xi[wrk->as.n_active] = 0.0;
+    set_active(wrk, &wrk->as.xi2con[wrk->as.n_active]);
     wrk->as.n_active += 1;
 }
 
 void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     // Retrieve constraint info.
-    u32 t = wrk->as.xi2con[xi_idx*3];
-    u32 idx = wrk->as.xi2con[xi_idx*3+1];
-    u32 is_state = wrk->as.xi2con[xi_idx*3+2];
+    u32 t = wrk->as.xi2con[xi_idx].t;
+    u32 idx = wrk->as.xi2con[xi_idx].idx;
+    u32 is_state = wrk->as.xi2con[xi_idx].is_state;
 
     // Update (xi_idx -> constraint info) map.
-    for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) {
-        wrk->as.xi2con[(i-1)*3] = wrk->as.xi2con[i*3]; 
-        wrk->as.xi2con[(i-1)*3+1] = wrk->as.xi2con[i*3+1]; 
-        wrk->as.xi2con[(i-1)*3+2] = wrk->as.xi2con[i*3+2]; 
-    }
+    for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) 
+        wrk->as.xi2con[(i-1)] = wrk->as.xi2con[i]; 
 
     /* 
         Update (t -> active constraints) map.
@@ -270,17 +277,18 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     nc = wrk->mu;
     map = wrk->as.active_u;
     for (u32 t=0; t<wrk->N; ++t)
-        for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
-            if (map[2*t*nc + i] > xi_idx) map[i] -= 1;
+        for (u32 i=0; i<2*nc && map[2*t*nc + i] >= 0; i+=2) 
+            if (map[2*t*nc + i] > xi_idx) map[2*t*nc + i] -= 1;
     nc = wrk->mx;
     map = wrk->as.active_x;
     for (u32 t=0; t<wrk->N; ++t)
-        for (u32 i=0; i<2*nc && map[i] >= 0; i+=2) 
-            if (map[2*t*nc + i] > xi_idx) map[i] -= 1;
+        for (u32 i=0; i<2*nc && map[2*t*nc + i] >= 0; i+=2) 
+            if (map[2*t*nc + i] > xi_idx) map[2*t*nc + i] -= 1;
 
     // Compact xi.
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi[i-1] = wrk->xi[i];
+    set_inactive(wrk, &(constraint_t) {t, idx, is_state});
     wrk->as.n_active -= 1;
 }
 
@@ -339,6 +347,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
         if (t>0) {
             memset(tmp1, 0, nx*sizeof(f64));
             fma_mv_t(tmp1, wrk->K+t*nu*nx, wrk->C+constr->idx*nu, nx, nu, nx);
+            negate(tmp1, nx);
         }
         // Walk back along row of M.
         m_ptr -= nu;
@@ -366,7 +375,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     */
     memset(wrk->L + n_active*wrk->nc, 0, (n_active+1)*sizeof(f64));
     m_ptr = wrk->M + n_active*N*nu;
-    fma_mv(wrk->L + n_active+wrk->nc, wrk->M, m_ptr, n_active, N*nu, N*nu);
+    fma_mv(wrk->L + n_active*wrk->nc, wrk->M, m_ptr, n_active, N*nu, N*nu);
     wrk->L[n_active*wrk->nc + n_active] = dot(m_ptr, m_ptr, N*nu);
 }
 
@@ -497,8 +506,6 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
     u32 N = wrk->N;
     u32 nu = wrk->nu;
     u32 nx = wrk->nx;
-    u32 mu = wrk->mu;
-    u32 mx = wrk->mx;
     f64* tmp1 = wrk->tmp1;
     f64* tmp2 = wrk->tmp2;
 
@@ -511,8 +518,9 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
         /*
             Compute u = - (R + B'PB)^{-1}(r + B'p)
         */
-        for (u32 i=0; i<nu; ++i) u[t*nu + i] = -wrk->r_wrk[t*nu + i];
+        for (u32 i=0; i<nu; ++i) u[t*nu + i] = wrk->r_wrk[t*nu + i];
         fma_mv_t(u+t*nu, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
+        negate(u + t*nu, nu);
         trsv(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
         trsv_t(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
 
@@ -539,7 +547,7 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
             x = Ax + Bu
         */
         fma_mv(x+t*nx+nx, wrk->A+t*nx*nx, x+t*nx, nx, nx, nx);
-        fma_mv(x+t*nx*nx, wrk->B+t*nx*nu, u+t*nu, nx, nu, nu);
+        fma_mv(x+t*nx+nx, wrk->B+t*nx*nu, u+t*nu, nx, nu, nu);
     }
 }
 
@@ -555,8 +563,14 @@ void get_Cu_Dx(workspace* wrk, f64* x, f64* u, f64* sx, f64* su) {
     memset(sx, 0, N*mx*sizeof(f64));
 
     for (u32 t=0; t<wrk->N; ++t) {
-        fma_mv(su+t*mu, wrk->C, u+t*nu, mu, nu, nu);
-        fma_mv(sx+t*mx, wrk->D, x+t*nx*nx+nx, mx, nx, nx);
+        for (u32 i=0; i<mu; ++i) {
+            if (is_active(wrk, &(constraint_t) {t, i, 0})) su[t*mu + i] = wrk->c[i];
+            else for (u32 j=0; j<nu; ++j) su[t*mu + i] += wrk->C[i*nu + j] * u[t*nu + j]; 
+        }
+        for (u32 i=0; i<mx; ++i) {
+            if (is_active(wrk, &(constraint_t) {t, i, 1})) sx[t*mx + i] = wrk->d[i];
+            else for (u32 j=0; j<nx; ++j) sx[t*mx + i] += wrk->D[i*nx + j] * x[t*nx+nx + j]; 
+        }
     }
 }
 
@@ -587,6 +601,27 @@ void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, 
     }
 }
 
+u32 is_active(workspace* wrk, constraint_t* constr) {
+    u32 t = constr->t;
+    u32 i = constr->idx;
+    u32 is_state = constr->is_state;
+    return wrk->as.as_members[t*(wrk->mx+wrk->mu) + is_state*wrk->mu + i];
+}
+
+void set_active(workspace* wrk, constraint_t* constr) {
+    u32 t = constr->t;
+    u32 i = constr->idx;
+    u32 is_state = constr->is_state;
+    wrk->as.as_members[t*(wrk->mx+wrk->mu) + is_state*wrk->mu + i] = 1;
+}
+
+void set_inactive(workspace* wrk, constraint_t* constr) {
+    u32 t = constr->t;
+    u32 i = constr->idx;
+    u32 is_state = constr->is_state;
+    wrk->as.as_members[t*(wrk->mx+wrk->mu) + is_state*wrk->mu + i] = 0;
+}
+
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     for (u32 i=0; i<ny; ++i)
         for (u32 j=0; j<nx; ++j) y[i] += A[i*stride + j] * x[j];
@@ -611,9 +646,14 @@ void trsv_t(f64* x, f64* L, u32 n, u32 stride) {
     }
 }
 
+void negate(f64* v, u32 n) {
+    for (u32 i=0; i<n; ++i) v[i] *= -1.0;
+}
+
 f64 dot(f64* v, f64* w, u32 n) {
     f64 acc = 0.0;
     for (u32 i=0; i<n; ++i) acc += v[i] * w[i];
+    return acc;
 }
 
 void swap(f64** a, f64** b) {
