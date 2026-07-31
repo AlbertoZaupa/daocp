@@ -100,12 +100,13 @@ u32 get_ncx(workspace* wrk);
 u32 get_ncu(workspace* wrk);
 void workspace_init(
     workspace* wrk, f64* A, f64* B, 
-    f64* w, f64* Q, f64* R, f64* q,
-    f64* r, f64* D, f64* C, f64* d,
-    f64* c, f64* x0, u32 N, u32 nx, 
-    u32 nu, u32* mx, u32* mu, u32 max_iter);
+    f64* w, f64* Q, f64* R, f64* S,
+    f64* q, f64* r, f64* D, f64* C, 
+    f64* d, f64* c, f64* x0, u32 N, 
+    u32 nx, u32 nu, u32* mx, u32* mu, 
+    u32 max_iter);
 void workspace_free(workspace* wrk);
-void solve_riccati(workspace* wrk, f64* R);
+void solve_riccati(workspace* wrk, f64* R, f64* S);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
@@ -658,10 +659,11 @@ u32 get_ncu(workspace* wrk) {
 
 void workspace_init(
     workspace* wrk, f64* A, f64* B, 
-    f64* w, f64* Q, f64* R, f64* q,
-    f64* r, f64* D, f64* C, f64* d,
-    f64* c, f64* x0, u32 N, u32 nx, 
-    u32 nu, u32* mx, u32* mu, u32 max_iter)
+    f64* w, f64* Q, f64* R, f64* S,
+    f64* q, f64* r, f64* D, f64* C, 
+    f64* d, f64* c, f64* x0, u32 N, 
+    u32 nx, u32 nu, u32* mx, u32* mu, 
+    u32 max_iter)
 {
     /* 
         Memory allocation.
@@ -775,7 +777,7 @@ void workspace_init(
     wrk->as.n_active = 0;
 
     // Initialize LQR/Riccati data
-    solve_riccati(wrk, R);
+    solve_riccati(wrk, R, S);
     get_lqr_qr(wrk);
     solve_lqr(wrk, wrk->x_lqr, wrk->u_lqr);
     get_Cu_Dx(wrk, wrk->x_lqr, wrk->u_lqr, wrk->sx_lqr, wrk->su_lqr);
@@ -785,8 +787,52 @@ void workspace_free(workspace* wrk) {
     free(wrk->memory);
 }
 
-void solve_riccati(workspace* wrk, f64* R) {
-    // To be implemented.
+void solve_riccati(workspace* wrk, f64* R, f64* S) {
+    u32 N = wrk->N;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+    f64* tmp1 = wrk->tmp1;
+    f64* tmp2 = wrk->tmp2;
+
+    memcpy(wrk->Lu, R, N*nu*nu*sizeof(f64));
+    memcpy(wrk->K, S, N*nu*nx*sizeof(f64));
+    memcpy(wrk->Acl, wrk->A, N*nx*nx*sizeof(f64));
+    memset(wrk->Pw, 0, N*nx*sizeof(f64));
+    for (i32 t=N-1; t>=0; t--) {
+        // Compute Lu = chol(R + B'PB)
+        transpose(tmp2, wrk->B + t*nx*nu, nx, nu);
+        memset(tmp1, 0, nx*nu*sizeof(f64));
+        fma_mm_nt(tmp1, tmp2, wrk->P + t*nx*nx, nu, nx, nx);
+        fma_mm_nt(wrk->Lu + t*nu*nu, tmp2, tmp1, nu, nu, nx);
+        cholesky(wrk->Lu + t*nu*nu, nu);
+
+        // Compute K = Lu^{-T}Lu^{-1}(S + B'PA)
+        transpose(tmp2, wrk->A + t*nx*nu, nx, nx);
+        fma_mm_nt(wrk->K+t*nx*nu, tmp1, tmp2, nu, nx, nx);
+        trsm(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
+        trsm_t(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
+
+        // Compute Acl = A - BK
+        for (u32 i=0; i<nx; ++i)
+            for (u32 j=0; j<nx; ++j)
+                for (u32 k=0; k<nu; ++k) 
+                    wrk->Acl[t*nx*nx + i*nx+j] -= wrk->B[t*nx*nu + i*nu + k] * wrk->K[t*nx*nx + k*nx + j];
+
+        // Compute Pw
+        fma_mv(wrk->Pw + t*nx, wrk->P + t*nx*nx, wrk->w + t*nx, nx, nx, nx);
+
+        if (t==0) return;
+        // Compute P = Q + A'P Acl
+        memset(tmp1, 0, nx*nx*sizeof(f64));
+        fma_mm_nt(tmp1, tmp2, wrk->P+t*nx*nx, nx, nx, nx);
+        for (u32 i=0; i<nx; ++i)
+            for (u32 j=0; j<nx; ++i)
+                for (u32 k=0; k<nx; ++k)
+                    wrk->P[(t-1)*nx*nx + i*nx+j] += tmp1[i*nx + k] * wrk->Acl[t*nx*nx + k*nx + j];
+        transpose(tmp1, wrk->P+(t-1)*nx*nx, nx, nx);
+        for (u32 i=0; i<nx*nx; ++i) 
+            wrk->P[(t-1)*nx*nx + i] = 0.5*(wrk->P[(t-1)*nx*nx + i] + tmp1[i]);
+    }
 }
 
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
@@ -810,6 +856,43 @@ void trsv_t(f64* x, f64* L, u32 n, u32 stride) {
     for (i32 i=n-1; i>=0; --i) {
         x[i] /= L[i*stride + i];
         for (i32 j=i-1; j>=0; --j) x[j] -= L[i*stride + j] * x[i];
+    }
+}
+
+void transpose(f64* dst, f64* src, u32 nrs, u32 ncs) {
+    for (u32 i=0; i<nrs; ++i)
+        for (u32 j=0; j<ncs; ++j) dst[j*nrs + i] = src[i*ncs + j];
+}
+
+void fma_mm_nt(f64* C, f64* A, f64* B, u32 or, u32 oc, u32 k) {
+    for (u32 i=0; i<or; ++i)
+        for (u32 j=0; j<oc; ++j)
+            for (u32 l=0; l<k; ++l) 
+                C[i*oc + j] += A[i*k + l] * B[j*k + l];
+}
+
+void cholesky(f64* L, u32 n) {
+    for (u32 i=0; i<n; ++i) {
+        L[i*n + i] = sqrt(L[i*n + i]);
+        for (u32 j=i+1; j<n; ++j) L[j*n + i] /= L[i*n + i];
+        for (u32 j=i+1; j<n; ++j)
+            for (u32 k=i+1; k<n; ++k) L[j*n + k] -= L[i*n + j] * L[i*n + k];
+    }
+}
+
+void trsm(f64* X, f64* L, u32 nv, u32 nsys) {
+    for (u32 i=0; i<nv; ++i) {
+        for (u32 vi=0; vi<nsys; ++vi) X[i*nsys + vi] /= L[i*nv+i];
+        for (u32 j=i+1; j<nv; ++j)
+            for (u32 vi=0; vi<nsys; ++vi) X[j*nsys + vi] -= L[j*nv + i] * X[i*nsys + vi];
+    }
+}
+
+void trsm_t(f64* X, f64* L, u32 nv, u32 nsys) {
+    for (i32 i=nv-1; i>=0; --i) {
+        for (u32 vi=0; vi<nsys; ++vi) X[i*nsys + vi] /= L[i*nv + i];
+        for (i32 j=i-1; j>=0; --j)
+            for (u32 vi=0; vi<nsys; ++vi) X[j*nsys + vi] -= L[i*nv + j] * X[i*nsys + vi];
     }
 }
 
