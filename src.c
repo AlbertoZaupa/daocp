@@ -54,7 +54,7 @@ typedef struct {
     f64* K;
     f64* P;
     f64* Acl;
-    f64* w_ul;
+    f64* Pw;
     f64* x_lqr;
     f64* u_lqr;
     f64* sx_lqr;
@@ -533,15 +533,16 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
 
     // Initialize states with disturbances
     memcpy(x + nx, wrk->w, N*nx*sizeof(f64));
+    memcpy(u, wrk->r_wrk, N*nu*sizeof(f64));
     // Initialize costate
     memcpy(tmp1, wrk->q_wrk + (N-1)*nx, nx*sizeof(f64)); 
 
     // Backward recursion
     for (i32 t=N-1; t>=0; t--) {
         /*
-            Compute u = - (R + B'PB)^{-1}(r + B'p + w_ul)
+            Compute u = - (R + B'PB)^{-1}(r + B'(p + Pw))
         */
-        for (u32 i=0; i<nu; ++i) u[t*nu + i] = wrk->r_wrk[t*nu + i] + wrk->w_ul[t*nu];
+        for (u32 i=0; i<nx; ++i) tmp1[i] += wrk->Pw[t*nx + i];
         fma_mv_t(u+t*nu, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
         negate(u + t*nu, nu);
         trsv(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
@@ -549,7 +550,7 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
 
         if (t==0) break;
         /*
-            Compute p = (A - BK)' p - K'r + q 
+            Compute p = (A - BK)' (p + Pw) - K'r + q 
         */
         for (u32 i=0; i<nx; ++i) tmp2[i] = wrk->q_wrk[(t-1)*nx + i];
         fma_mv_t(tmp2, wrk->Acl+t*nx*nx, tmp1, nx, nx, nx);
@@ -676,8 +677,8 @@ void workspace_init(
     u32 nfloats = 3*N*nx*nx + // A, P, Acl
                   2*N*nx*nu + // B, K
                   N*nu*nu +   // Lu
-                  5*N*nx+2*nx + // q, q_wrk, x, x_lqr, w
-                  5*N*nu +    // u, u_lqr, r, r_wrk, w_ul
+                  6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
+                  4*N*nu +    // u, u_lqr, r, r_wrk
                   5*nc +      // sx, su, sx_lqr, su_lqr, xi, p, b_wrk
                   ncx*nx+ncu*nu + // D, C
                   ncx+ncu +       // d, c
@@ -701,7 +702,7 @@ void workspace_init(
     wrk->K = mem; mem+=N*nx*nu;
     wrk->Lu = mem; mem+=N*nu*nu;
     wrk->w = mem; mem+=N*nx;
-    wrk->w_ul = mem; mem+=N*nu;
+    wrk->Pw = mem; mem+=N*nx;
     wrk->x = mem; mem+=N*nx+nx;
     wrk->x_lqr = mem; mem+=N*nx+nx;
     wrk->u = mem; mem+=N*nu;
