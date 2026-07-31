@@ -111,6 +111,11 @@ void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
 void trsv_t(f64* x, f64* L, u32 n, u32 stride);
+void transpose(f64* dst, f64* src, u32 nrs, u32 ncs);
+void fma_mm_nt(f64* C, f64* A, f64* B, u32 or, u32 oc, u32 k);
+void cholesky(f64* L, u32 n);
+void trsm(f64* X, f64* L, u32 nv, u32 nsys);
+void trsm_t(f64* X, f64* L, u32 nv, u32 nsys);
 void negate(f64* v, u32 n);
 f64 dot(f64* v, f64* w, u32 n);
 void swap(f64** a, f64** b);
@@ -676,6 +681,8 @@ void workspace_init(
         ncu += mu[i];
         nc += mx[i] + mu[i];
     }
+    u32 tmp2_size = nx * (nx > nu ? nx : nu);
+    u32 tmp1_size = nc > tmp2_size ? nc : tmp2_size;
     u32 nfloats = 3*N*nx*nx + // A, P, Acl
                   2*N*nx*nu + // B, K
                   N*nu*nu +   // Lu
@@ -686,8 +693,8 @@ void workspace_init(
                   ncx+ncu +       // d, c
                   nc*nc +         // L
                   nc*N*nu +       // M
-                  (nc > nx ? nc : nx) + // tmp1
-                  nx;             // tmp2
+                  tmp1_size + // tmp1
+                  tmp2_size;             // tmp2
 
     wrk->memory = malloc(
         nfloats*sizeof(f64) +
@@ -726,8 +733,8 @@ void workspace_init(
     wrk->c = mem; mem+=ncu;
     wrk->L = mem; mem+=nc*nc;
     wrk->M = mem; mem+=nc*N*nu;
-    wrk->tmp1 = mem; mem+=(nc > nx ? nc : nx);
-    wrk->tmp2 = mem; mem+=nx;
+    wrk->tmp1 = mem; mem+=tmp1_size;
+    wrk->tmp2 = mem; mem+=tmp2_size;
     unsigned char* vmem = (unsigned char*) mem;
     wrk->mx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cummx = (u32*) vmem; vmem+=N*sizeof(u32);
@@ -807,7 +814,7 @@ void solve_riccati(workspace* wrk, f64* R, f64* S) {
         cholesky(wrk->Lu + t*nu*nu, nu);
 
         // Compute K = Lu^{-T}Lu^{-1}(S + B'PA)
-        transpose(tmp2, wrk->A + t*nx*nu, nx, nx);
+        transpose(tmp2, wrk->A + t*nx*nx, nx, nx);
         fma_mm_nt(wrk->K+t*nx*nu, tmp1, tmp2, nu, nx, nx);
         trsm(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
         trsm_t(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
@@ -816,22 +823,27 @@ void solve_riccati(workspace* wrk, f64* R, f64* S) {
         for (u32 i=0; i<nx; ++i)
             for (u32 j=0; j<nx; ++j)
                 for (u32 k=0; k<nu; ++k) 
-                    wrk->Acl[t*nx*nx + i*nx+j] -= wrk->B[t*nx*nu + i*nu + k] * wrk->K[t*nx*nx + k*nx + j];
+                    wrk->Acl[t*nx*nx + i*nx+j] -= wrk->B[t*nx*nu + i*nu + k] * wrk->K[t*nx*nu + k*nx + j];
 
         // Compute Pw
         fma_mv(wrk->Pw + t*nx, wrk->P + t*nx*nx, wrk->w + t*nx, nx, nx, nx);
 
         if (t==0) return;
-        // Compute P = Q + A'P Acl
+        // Compute P = Q + A'P Acl - S'K
         memset(tmp1, 0, nx*nx*sizeof(f64));
         fma_mm_nt(tmp1, tmp2, wrk->P+t*nx*nx, nx, nx, nx);
         for (u32 i=0; i<nx; ++i)
-            for (u32 j=0; j<nx; ++i)
+            for (u32 j=0; j<nx; ++j)
                 for (u32 k=0; k<nx; ++k)
                     wrk->P[(t-1)*nx*nx + i*nx+j] += tmp1[i*nx + k] * wrk->Acl[t*nx*nx + k*nx + j];
+        for (u32 i=0; i<nx; ++i)
+            for (u32 j=0; j<nx; ++j)
+                for (u32 k=0; k<nu; ++k)
+                    wrk->P[(t-1)*nx*nx + i*nx+j] -= S[t*nx*nu + k*nx + i] * wrk->K[t*nx*nu + k*nx + j];
         transpose(tmp1, wrk->P+(t-1)*nx*nx, nx, nx);
         for (u32 i=0; i<nx*nx; ++i) 
             wrk->P[(t-1)*nx*nx + i] = 0.5*(wrk->P[(t-1)*nx*nx + i] + tmp1[i]);
+
     }
 }
 
@@ -876,7 +888,7 @@ void cholesky(f64* L, u32 n) {
         L[i*n + i] = sqrt(L[i*n + i]);
         for (u32 j=i+1; j<n; ++j) L[j*n + i] /= L[i*n + i];
         for (u32 j=i+1; j<n; ++j)
-            for (u32 k=i+1; k<n; ++k) L[j*n + k] -= L[i*n + j] * L[i*n + k];
+            for (u32 k=i+1; k<n; ++k) L[j*n + k] -= L[i + j*n] * L[i + k*n];
     }
 }
 
