@@ -127,7 +127,7 @@ void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
 void trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void transpose(f64* dst, f64* src, u32 nrs, u32 ncs);
-void fma_mm_nt(f64* C, f64* A, f64* B, u32 or, u32 oc, u32 k, u32 ostride);
+void fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 void cholesky(f64* L, u32 n);
 void trsm(f64* X, f64* L, u32 nv, u32 nsys);
 void trsm_t(f64* X, f64* L, u32 nv, u32 nsys);
@@ -344,7 +344,8 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     }
 
     // Update ( xi_idx -> constraint ) map.
-    wrk->as.xi2con[wrk->as.n_active] = (constraint_t) {t, idx, is_state};
+    constraint_t new_constraint = {(i32)t, (i32)idx, is_state};
+    wrk->as.xi2con[wrk->as.n_active] = new_constraint;
 
     wrk->xi[wrk->as.n_active] = 0.0;
     set_active(wrk, &wrk->as.xi2con[wrk->as.n_active]);
@@ -394,7 +395,8 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     // Compact xi.
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi[i-1] = wrk->xi[i];
-    set_inactive(wrk, &(constraint_t) {t, idx, is_state});
+    constraint_t removed_constraint = {(i32)t, (i32)idx, is_state};
+    set_inactive(wrk, &removed_constraint);
     wrk->as.n_active -= 1;
 }
 
@@ -730,12 +732,14 @@ void get_Cu_Dx(workspace* wrk, u32 all, f64* x, f64* u, f64* Dx, f64* Cu) {
     if (!all) {
         for (u32 t=0; t<N; ++t) {
             for (u32 i=0; i<mu[t]; ++i) {
-                if (is_active(wrk, &(constraint_t) {t, i, 0})) Cu[cmu[t] + i] = wrk->c[cmu[t] + i];
-                else for (u32 j=0; j<nu; ++j) Cu[cmu[t] + i] += wrk->C[cmu[t]*nu + i*nu + j] * u[t*nu + j]; 
+                constraint_t constraint = {(i32)t, (i32)i, 0};
+                if (is_active(wrk, &constraint)) Cu[cmu[t] + i] = wrk->c[cmu[t] + i];
+                else for (u32 j=0; j<nu; ++j) Cu[cmu[t] + i] += wrk->C[cmu[t]*nu + i*nu + j] * u[t*nu + j];
             }
             for (u32 i=0; i<mx[t]; ++i) {
-                if (is_active(wrk, &(constraint_t) {t, i, 1})) Dx[cmx[t] + i] = wrk->d[cmx[t] + i];
-                else for (u32 j=0; j<nx; ++j) Dx[cmx[t] + i] += wrk->D[cmx[t]*nx + i*nx + j] * x[t*nx+nx + j]; 
+                constraint_t constraint = {(i32)t, (i32)i, 1};
+                if (is_active(wrk, &constraint)) Dx[cmx[t] + i] = wrk->d[cmx[t] + i];
+                else for (u32 j=0; j<nx; ++j) Dx[cmx[t] + i] += wrk->D[cmx[t]*nx + i*nx + j] * x[t*nx+nx + j];
             }
         }
     } else {
@@ -1035,9 +1039,9 @@ void transpose(f64* dst, f64* src, u32 nrs, u32 ncs) {
         for (u32 j=0; j<ncs; ++j) dst[j*nrs + i] = src[i*ncs + j];
 }
 
-void fma_mm_nt(f64* C, f64* A, f64* B, u32 or, u32 oc, u32 k, u32 ostride) {
-    for (u32 i=0; i<or; ++i)
-        for (u32 j=0; j<oc; ++j)
+void fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
+    for (u32 i=0; i<nr; ++i)
+        for (u32 j=0; j<nc; ++j)
             for (u32 l=0; l<k; ++l) 
                 C[i*ostride + j] += A[i*k + l] * B[j*k + l];
 }
