@@ -179,7 +179,14 @@ void update_problem_data(
     f64* A, f64* B, f64* w, f64* Q, f64* R, 
     f64* S, u32* mx, u32* mu, f64* D, 
     f64* C, f64* d, f64* c) 
-{
+{   
+    /*
+    For simplicity:
+    - If the user wants to change any of A, B, w, it must provide again all three.
+    - If the user wants to change any of Q, R, S, it must provide again all three.
+    - If the user wants to change any of D, d, C, c, it must provide again all four, 
+      toghether with mx, mu.
+    */
     u32 constraints_were_updated = D != 0;
     u32 dynamics_was_updated = A != 0;
     u32 cost_was_updated = Q != 0;
@@ -201,27 +208,27 @@ void update_problem_data(
         // Previous working set is discarded.
         reset_working_set(wrk);
     }
+    if (cost_was_updated) {
+        memcpy(wrk->Q, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
+        memcpy(wrk->R, R, wrk->N*wrk->nu*wrk->nu*sizeof(f64));
+        memcpy(wrk->S, S, wrk->N*wrk->nx*wrk->nu*sizeof(f64));
+    }
     if (dynamics_was_updated) {
         memcpy(wrk->A, A, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
         memcpy(wrk->B, B, wrk->N*wrk->nu*wrk->nx*sizeof(f64));
         memcpy(wrk->w, w, wrk->N*wrk->nx*sizeof(f64));
     }
-    if (cost_was_updated) {
-        memcpy(wrk->P, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
-        memcpy(wrk->Q, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
-        memcpy(wrk->R, R, wrk->N*wrk->nu*wrk->nu*sizeof(f64));
-        memcpy(wrk->S, S, wrk->N*wrk->nx*wrk->nu*sizeof(f64));
-    }
 
-    if (dynamics_was_updated || cost_was_updated)
+    if (dynamics_was_updated || cost_was_updated) {
+        memcpy(wrk->P, wrk->Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
         solve_riccati(wrk);
+    }
     
     // If constraints were not updated but dH changed, rebuild
-    // from scratch. If new dH turns out to be singular, reset WS.
-    if (
-        (!constraints_were_updated || cost_was_updated || dynamics_was_updated) 
-        && get_L_from_scratch(wrk)   
-    ) reset_working_set(wrk);
+    // from scratch. If new dH turns out to be singular, reset WS.ù
+    u32 corrupt_workspace = wrk->dH_singular; // Corrupt workspace due to non "SOLVE" return status.
+    u32 new_dH_singular = !wrk->dH_singular && !constraints_were_updated && (cost_was_updated || dynamics_was_updated) && get_L_from_scratch(wrk);
+    if (corrupt_workspace || new_dH_singular) reset_working_set(wrk);
 
     memcpy(wrk->r_wrk, wrk->r, wrk->nu*wrk->N*sizeof(f64));
     memcpy(wrk->q_wrk, wrk->q, wrk->nx*wrk->N*sizeof(f64));
@@ -579,6 +586,7 @@ void reset_working_set(workspace* wrk) {
     for (u32 i=0; i<2*get_ncu(wrk); ++i) wrk->as.active_u[i] = -1;
     for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
     wrk->as.n_active = 0;
+    wrk->dH_singular = 0;
 }
 
 u32 is_dual_feasible(f64* p, u32 n) {
