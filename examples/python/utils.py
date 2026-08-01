@@ -15,6 +15,7 @@ def dare(A, B, Q, R, max_iter=1000):
         ]))
         Lp_new = L[nu:, nu:]
         res = np.linalg.norm(Lp_new - Lp)
+        Lp = Lp_new
         if res < 1e-9: break
-    if k == max_iter + 1: print("!!! DARE reached maximum number of iterations.")
+    if k == max_iter: print("!!! DARE reached maximum number of iterations.")
     return Lp_new @ Lp_new.T

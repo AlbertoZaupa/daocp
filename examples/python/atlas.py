@@ -47,7 +47,7 @@ def solve_ocp():
 def solve_mpc():
     solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
                         lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
-                        x0, N, nx, nu, max_iter)
+                        dx0, N, nx, nu, max_iter)
     state = dx0.copy()
     for t in range(300):
         res = solver.solve()
@@ -60,4 +60,4 @@ def solve_mpc():
     print(f"\nFinal state:\n{state}")
 
 if __name__ == '__main__':
-    solve_ocp()
+    solve_mpc()
