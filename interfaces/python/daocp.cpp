@@ -189,10 +189,20 @@ void check_cost(const Array& Q, const Array& R, const Array& S,
 }
 
 struct SolveInfo {
-    u32 status;
+    std::string status;
     u32 iters;
     double solve_time;
 };
+
+const char* status_string(u32 status) {
+    switch (status) {
+        case SOLVED: return "SOLVED";
+        case INFEASIBLE: return "INFEASIBLE";
+        case MAX_ITER: return "MAX_ITER";
+        case ILL_CONDITIONED: return "ILL_CONDITIONED";
+        default: return "UNKNOWN";
+    }
+}
 
 struct SolveResult {
     py::array x;
@@ -256,7 +266,7 @@ public:
                                 wrk_.x, owner),
             py::array_t<double>({N_, nu_}, {sizeof(double) * nu_, sizeof(double)},
                                 wrk_.u, owner),
-            {wrk_.return_status, iters, micros}
+            {status_string(wrk_.return_status), iters, micros}
         };
         return result;
     }

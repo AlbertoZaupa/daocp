@@ -24,7 +24,8 @@ x0 = data['x0']
 C = np.vstack([np.eye(nu), -np.eye(nu)])
 D = np.zeros((0, nx))
 ub = data['d_u'] - u_ref
-c = np.hstack([ub, -ub])
+lb = -data['d_u'] - u_ref
+c = np.hstack([ub, -lb])
 d = np.zeros(0)
 dx0 = x0 - x_ref
 q = np.zeros(nx)
@@ -39,7 +40,7 @@ def solve_ocp():
                         lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
-    assert res.info.status == SOLVED, res.info.status
+    assert res.info.status == "SOLVED", res.info.status
     print(f"Iterations until convergence: {res.info.iter}")
     print(f"Solve time: {res.info.solve_time:.3f} us")
 
@@ -50,9 +51,9 @@ def solve_mpc():
     state = dx0.copy()
     for t in range(300):
         res = solver.solve()
-        assert res.info.status == SOLVED, res.info.status
+        assert res.info.status == "SOLVED", res.info.status
         print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
-        state = A @ state + B @ np.clip(res.u[0], -ub, ub) + w
+        state = A @ state + B @ np.clip(res.u[0], lb, ub) + w
         solver.update(state)
         print()
 

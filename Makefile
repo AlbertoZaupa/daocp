@@ -16,5 +16,5 @@ run: all
 	$(PYTHON) examples/python/di.py
 
 clean:
-	$(RM) build/*
+	$(RM) -r build
 	$(RM) lib/daocp*.so

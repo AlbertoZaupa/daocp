@@ -34,7 +34,7 @@ def solve_ocp():
                         lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
                         x0, N, nx, nu, max_iter)
     res = solver.solve()
-    assert res.info.status == SOLVED
+    assert res.info.status == "SOLVED"
     print(f"Optimal control over horizon {N}:")
     for t in range(N):
         print(f"u[{t}] = {res.u[t]}")
@@ -49,7 +49,7 @@ def solve_mpc():
     state = x0.copy()
     for t in range(N):
         res = solver.solve()
-        assert res.info.status == SOLVED
+        assert res.info.status == "SOLVED"
         print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
         print(f"u[{t}] = {res.u[0]}")
         state = A @ state + B @ np.clip(res.u[0], -1, 1) + w
