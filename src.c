@@ -29,7 +29,8 @@ typedef struct {
 
 typedef struct {
     active_set as;
-    void* memory;
+    void* smemory;
+    void* dmemory;
     f64* xi;
     f64* x;
     f64* u;
@@ -118,6 +119,7 @@ void workspace_init(
     f64* d, f64* c, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
     u32 max_iter);
+void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu);
 void workspace_free(workspace* wrk);
 void solve_riccati(workspace* wrk);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
@@ -178,36 +180,33 @@ void update_problem_data(
     f64* S, u32* mx, u32* mu, f64* D, 
     f64* C, f64* d, f64* c) 
 {
-    u32 constraints_were_updated = 0;
-    u32 dynamics_was_updated = 0;
-    u32 cost_was_updated = 0;
+    u32 constraints_were_updated = D != 0;
+    u32 dynamics_was_updated = A != 0;
+    u32 cost_was_updated = Q != 0;
 
     memcpy(wrk->x, x0, wrk->nx*sizeof(f64));
     memcpy(wrk->x_lqr, x0, wrk->nx*sizeof(f64));
     if (q) memcpy(wrk->q, q, wrk->N*wrk->nx*sizeof(f64));
     if (r) memcpy(wrk->r, r, wrk->N*wrk->nu*sizeof(f64));
-    if (mx) {
-        constraints_were_updated = 1;
-        memcpy(wrk->mx, mx, wrk->N*sizeof(u32));
-        compute_prefix_sum(wrk->cmx, wrk->mx, wrk->N);
+    if (constraints_were_updated) {
+        // Deallocate and reallocate dynamic workspace.
+        free(wrk->dmemory);
+        allocate_dynamic_workspace(wrk, mx, mu);
+
         memcpy(wrk->D, D, get_ncx(wrk)*wrk->nx*sizeof(f64));
-        memcpy(wrk->d, d, get_ncx(wrk)*sizeof(f64));
-    }
-    if (mu) {
-        constraints_were_updated = 1;
-        memcpy(wrk->mu, mu, wrk->N*sizeof(u32));
-        compute_prefix_sum(wrk->cmu, wrk->mu, wrk->N);
         memcpy(wrk->C, C, get_ncu(wrk)*wrk->nu*sizeof(f64));
+        memcpy(wrk->d, d, get_ncx(wrk)*sizeof(f64));
         memcpy(wrk->c, c, get_ncu(wrk)*sizeof(f64));
+
+        // Previous working set is discarded.
+        reset_working_set(wrk);
     }
-    if (A) {
-        dynamics_was_updated = 1;
+    if (dynamics_was_updated) {
         memcpy(wrk->A, A, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
         memcpy(wrk->B, B, wrk->N*wrk->nu*wrk->nx*sizeof(f64));
         memcpy(wrk->w, w, wrk->N*wrk->nx*sizeof(f64));
     }
-    if (Q) {
-        cost_was_updated = 1;
+    if (cost_was_updated) {
         memcpy(wrk->P, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
         memcpy(wrk->Q, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
         memcpy(wrk->R, R, wrk->N*wrk->nu*wrk->nu*sizeof(f64));
@@ -217,11 +216,10 @@ void update_problem_data(
     if (dynamics_was_updated || cost_was_updated)
         solve_riccati(wrk);
     
-    if (constraints_were_updated)
-        wrk->nc = get_ncx(wrk) + get_ncu(wrk);
-    
+    // If constraints were not updated but dH changed, rebuild
+    // from scratch. If new dH turns out to be singular, reset WS.
     if (
-        (constraints_were_updated || cost_was_updated || dynamics_was_updated) 
+        (!constraints_were_updated || cost_was_updated || dynamics_was_updated) 
         && get_L_from_scratch(wrk)   
     ) reset_working_set(wrk);
 
@@ -577,13 +575,9 @@ void get_b(workspace* wrk) {
 }
 
 void reset_working_set(workspace* wrk) {
-    for (u32 t=0; t<wrk->N; ++t) {
-        for (u32 i=0; i<2*wrk->mx[t]; ++i)
-            wrk->as.active_x[2*wrk->cmx[t]+i] = -1;
-        for (u32 i=0; i<2*wrk->mu[t]; ++i)
-            wrk->as.active_u[2*wrk->cmu[t]+i] = -1;
-    }
-    memset(wrk->as.as_members, 0, wrk->nc*sizeof(u32));
+    for (u32 i=0; i<2*get_ncx(wrk); ++i) wrk->as.active_x[i] = -1;
+    for (u32 i=0; i<2*get_ncu(wrk); ++i) wrk->as.active_u[i] = -1;
+    for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
     wrk->as.n_active = 0;
 }
 
@@ -815,41 +809,26 @@ void workspace_init(
     f64* d, f64* c, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
     u32 max_iter)
-{
-    /* 
-        Memory allocation.
+{   
+    wrk->N = N;
+    wrk->nx = nx;
+    wrk->nu = nu;
+    wrk->dH_singular = 0;
+    wrk->max_iter = max_iter;
+
+    /*
+        Allocate statically sized memory
     */
-    u32 nc = 0;
-    u32 ncx = 0;
-    u32 ncu = 0;
-    for (u32 i=0; i<N; ++i) {
-        ncx += mx[i];
-        ncu += mu[i];
-        nc += mx[i] + mu[i];
-    }
-    u32 tmp2_size = nx * (nx > nu ? nx : nu);
-    u32 tmp1_size = nc > tmp2_size ? nc : tmp2_size;
     u32 nfloats = 4*N*nx*nx + // A, P, Q, Acl
                   3*N*nx*nu + // B, K, S
                   2*N*nu*nu +   // Lu, R
                   6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
-                  4*N*nu +    // u, u_lqr, r, r_wrk
-                  5*nc +      // Dx, Cu, Dx_lqr, Cu_lqr, xi, p, b_wrk
-                  ncx*nx+ncu*nu + // D, C
-                  ncx+ncu +       // d, c
-                  nc*nc +         // L
-                  nc*N*nu +       // M
-                  tmp1_size + // tmp1
-                  tmp2_size;             // tmp2
-
-    wrk->memory = malloc(
+                  4*N*nu;     // u, u_lqr, r, r_wrk
+    wrk->smemory = malloc(
         nfloats*sizeof(f64) +
-        4*N*sizeof(u32) + // mx, cmx, mu, cmu
-        nc*sizeof(u32) +              // active_set.as_members
-        (2*ncx + 2*ncu)*sizeof(i32) + // active_set.active_x/active_u
-        nc*sizeof(constraint_t)       // active_set.xi2con
+        4*N*sizeof(u32) // mx, cmx, mu, cmu
     );
-    f64* mem = (f64*) wrk->memory;
+    f64* mem = (f64*) wrk->smemory;
     wrk->A = mem; mem+=N*nx*nx;
     wrk->Acl = mem; mem+=N*nx*nx;
     wrk->P = mem; mem+=N*nx*nx;
@@ -869,46 +848,20 @@ void workspace_init(
     wrk->q_wrk = mem; mem+=N*nx;
     wrk->r = mem; mem+=N*nu;
     wrk->r_wrk = mem; mem+=N*nu;
-    wrk->Dx = mem; mem+=ncx;
-    wrk->Dx_lqr = mem; mem+=ncx;
-    wrk->Cu = mem; mem+=ncu;
-    wrk->Cu_lqr = mem; mem+=ncu;
-    wrk->xi = mem; mem+=nc;
-    wrk->p = mem; mem+=nc;
-    wrk->b_wrk = mem; mem+=nc;
-    wrk->D = mem; mem+=ncx*nx;
-    wrk->C = mem; mem+=ncu*nu;
-    wrk->d = mem; mem+=ncx;
-    wrk->c = mem; mem+=ncu;
-    wrk->L = mem; mem+=nc*nc;
-    wrk->M = mem; mem+=nc*N*nu;
-    wrk->tmp1 = mem; mem+=tmp1_size;
-    wrk->tmp2 = mem; mem+=tmp2_size;
-    unsigned char* vmem = (unsigned char*) mem;
+    unsigned char* vmem = (unsigned char*) mem; 
     wrk->mx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cmx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->mu = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cmu = (u32*) vmem; vmem+=N*sizeof(u32);
-    wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
-    wrk->as.active_x = (i32*) vmem; vmem+=2*ncx*sizeof(i32); 
-    wrk->as.active_u = (i32*) vmem; vmem+=2*ncu*sizeof(i32); 
-    wrk->as.xi2con = (constraint_t*) vmem; vmem+=nc*sizeof(constraint_t);
+
+
+    /*
+        Allocate dynamically sized memory
+    */
+    allocate_dynamic_workspace(wrk, mx, mu);
     
-    wrk->dH_singular = 0;
-    wrk->N = N;
-    wrk->nx = nx;
-    wrk->nu = nu;
-    wrk->nc = nc;
-    wrk->max_iter = max_iter;
-    memcpy(wrk->mx, mx, N*sizeof(u32));
-    memcpy(wrk->mu, mu, N*sizeof(u32));
-
-    // Compute prexif sums of mx and mu.
-    u32 sumx = 0;
-    u32 sumu = 0;
-    compute_prefix_sum(wrk->cmx, wrk->mx, N);
-    compute_prefix_sum(wrk->cmu, wrk->mu, N);
-
+    u32 ncx = get_ncx(wrk);
+    u32 ncu = get_ncu(wrk);
     memcpy(wrk->A, A, N*nx*nx*sizeof(f64));
     memcpy(wrk->B, B, N*nx*nu*sizeof(f64));
     memcpy(wrk->w, w, N*nx*sizeof(f64));
@@ -926,10 +879,7 @@ void workspace_init(
     memcpy(wrk->x_lqr, x0, nx*sizeof(f64));
 
     // Initialize Working Set.
-    for (u32 i=0; i<2*ncx; ++i) wrk->as.active_x[i] = -1;
-    for (u32 i=0; i<2*ncu; ++i) wrk->as.active_u[i] = -1;
-    for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
-    wrk->as.n_active = 0;
+    reset_working_set(wrk);
 
     // Initialize LQR/Riccati data
     solve_riccati(wrk);
@@ -938,8 +888,61 @@ void workspace_init(
     get_Cu_Dx(wrk, 0, wrk->x_lqr, wrk->u_lqr, wrk->Dx_lqr, wrk->Cu_lqr);
 }
 
+void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu) {
+    u32 N = wrk->N;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+
+    memcpy(wrk->mx, mx, N*sizeof(u32));
+    memcpy(wrk->mu, mu, N*sizeof(u32));
+    // Compute prexif sums of mx and mu.
+    compute_prefix_sum(wrk->cmx, wrk->mx, N);
+    compute_prefix_sum(wrk->cmu, wrk->mu, N);
+    u32 ncx = get_ncx(wrk);
+    u32 ncu = get_ncu(wrk);
+    u32 nc = wrk->nc = ncx + ncu;
+
+    u32 tmp2_size = nx * (nx > nu ? nx : nu);
+    u32 tmp1_size = nc > tmp2_size ? nc : tmp2_size;
+    u32 nfloats = 5*nc +          // Dx, Cu, Dx_lqr, Cu_lqr, xi, p, b_wrk
+                ncx*nx+ncu*nu + // D, C
+                ncx+ncu +       // d, c
+                nc*nc +         // L
+                nc*N*nu +       // M
+                tmp1_size +     // tmp1
+                tmp2_size;      // tmp2
+    wrk->dmemory = malloc(
+        nfloats*sizeof(f64) +
+        nc*sizeof(u32) +              // active_set.as_members
+        (2*ncx + 2*ncu)*sizeof(i32) + // active_set.active_x/active_u
+        nc*sizeof(constraint_t)       // active_set.xi2con
+    );
+    f64* mem = (f64*) wrk->dmemory;
+    wrk->Dx = mem; mem+=ncx;
+    wrk->Dx_lqr = mem; mem+=ncx;
+    wrk->Cu = mem; mem+=ncu;
+    wrk->Cu_lqr = mem; mem+=ncu;
+    wrk->xi = mem; mem+=nc;
+    wrk->p = mem; mem+=nc;
+    wrk->b_wrk = mem; mem+=nc;
+    wrk->D = mem; mem+=ncx*nx;
+    wrk->C = mem; mem+=ncu*nu;
+    wrk->d = mem; mem+=ncx;
+    wrk->c = mem; mem+=ncu;
+    wrk->L = mem; mem+=nc*nc;
+    wrk->M = mem; mem+=nc*N*nu;
+    wrk->tmp1 = mem; mem+=tmp1_size;
+    wrk->tmp2 = mem; mem+=tmp2_size;
+    unsigned char* vmem = (unsigned char*) mem;
+    wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
+    wrk->as.active_x = (i32*) vmem; vmem+=2*ncx*sizeof(i32); 
+    wrk->as.active_u = (i32*) vmem; vmem+=2*ncu*sizeof(i32); 
+    wrk->as.xi2con = (constraint_t*) vmem; vmem+=nc*sizeof(constraint_t);
+}
+
 void workspace_free(workspace* wrk) {
-    free(wrk->memory);
+    free(wrk->smemory);
+    free(wrk->dmemory);
 }
 
 void solve_riccati(workspace* wrk) {
