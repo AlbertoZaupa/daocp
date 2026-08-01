@@ -2,7 +2,7 @@ PYTHON ?= $(shell command -v python >/dev/null 2>&1 && echo python || echo pytho
 
 export PYTHONPATH := $(CURDIR)/lib:$(PYTHONPATH)
 
-.PHONY: all run
+.PHONY: all run clean
 
 all:
 	@$(PYTHON) -c "import pybind11" 2>/dev/null || \
@@ -14,3 +14,7 @@ all:
 
 run: all
 	$(PYTHON) examples/python/di.py
+
+clean:
+	$(RM) build/*
+	$(RM) lib/daocp*.so
