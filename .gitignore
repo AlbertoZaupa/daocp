@@ -1,4 +1,4 @@
 *.o
 lib/*
 build/*
-*/__pycache__/*
+examples/python/__pycache__/*
