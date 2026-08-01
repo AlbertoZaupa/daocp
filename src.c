@@ -50,6 +50,9 @@ typedef struct {
     f64* A;
     f64* B;
     f64* w;
+    f64* Q;
+    f64* R;
+    f64* S;
     f64* Lu;
     f64* K;
     f64* P;
@@ -116,7 +119,7 @@ void workspace_init(
     u32 nx, u32 nu, u32* mx, u32* mu, 
     u32 max_iter);
 void workspace_free(workspace* wrk);
-void solve_riccati(workspace* wrk, f64* R, f64* S);
+void solve_riccati(workspace* wrk);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
@@ -206,10 +209,13 @@ void update_problem_data(
     if (Q) {
         cost_was_updated = 1;
         memcpy(wrk->P, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
+        memcpy(wrk->Q, Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
+        memcpy(wrk->R, R, wrk->N*wrk->nu*wrk->nu*sizeof(f64));
+        memcpy(wrk->S, S, wrk->N*wrk->nx*wrk->nu*sizeof(f64));
     }
 
     if (dynamics_was_updated || cost_was_updated)
-        solve_riccati(wrk, R, S);
+        solve_riccati(wrk);
     
     if (constraints_were_updated)
         wrk->nc = get_ncx(wrk) + get_ncu(wrk);
@@ -564,20 +570,20 @@ void get_b(workspace* wrk) {
         u32 idx = wrk->as.xi2con[i].idx;
         u32 is_state = wrk->as.xi2con[i].is_state;
         if (is_state) 
-            wrk->b_wrk[i] = wrk->d[wrk->cmx[t]+idx] - wrk->Dx[wrk->cmx[t]+idx];
+            wrk->b_wrk[i] = wrk->d[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
         else
-            wrk->b_wrk[i] = wrk->c[wrk->cmu[t]+idx] - wrk->Cu[wrk->cmu[t]+idx];
+            wrk->b_wrk[i] = wrk->c[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
     }
 }
 
 void reset_working_set(workspace* wrk) {
     for (u32 t=0; t<wrk->N; ++t) {
         for (u32 i=0; i<2*wrk->mx[t]; ++i)
-            wrk->as.active_x[wrk->cmx[t]+i] = -1;
+            wrk->as.active_x[2*wrk->cmx[t]+i] = -1;
         for (u32 i=0; i<2*wrk->mu[t]; ++i)
-            wrk->as.active_u[wrk->cmu[t]+i] = -1;
+            wrk->as.active_u[2*wrk->cmu[t]+i] = -1;
     }
-    for (u32 i=0; i<wrk->as.n_active; ++i) wrk->as.as_members[i] = 0;
+    memset(wrk->as.as_members, 0, wrk->nc*sizeof(u32));
     wrk->as.n_active = 0;
 }
 
@@ -732,8 +738,8 @@ void get_Cu_Dx(workspace* wrk, u32 all, f64* x, f64* u, f64* Dx, f64* Cu) {
         }
     } else {
         for (u32 t=0; t<N; ++t) {
-            fma_mv_t(Cu + cmu[t], wrk->C + cmu[t]*nu, u + t*nu, mu[t], nu, nu);
-            fma_mv_t(Dx + cmx[t], wrk->D + cmx[t]*nx, x + t*nx + nx, mx[t], nx, nx);
+            fma_mv(Cu + cmu[t], wrk->C + cmu[t]*nu, u + t*nu, mu[t], nu, nu);
+            fma_mv(Dx + cmx[t], wrk->D + cmx[t]*nx, x + t*nx + nx, mx[t], nx, nx);
         }
     }
 }
@@ -823,9 +829,9 @@ void workspace_init(
     }
     u32 tmp2_size = nx * (nx > nu ? nx : nu);
     u32 tmp1_size = nc > tmp2_size ? nc : tmp2_size;
-    u32 nfloats = 3*N*nx*nx + // A, P, Acl
-                  2*N*nx*nu + // B, K
-                  N*nu*nu +   // Lu
+    u32 nfloats = 4*N*nx*nx + // A, P, Q, Acl
+                  3*N*nx*nu + // B, K, S
+                  2*N*nu*nu +   // Lu, R
                   6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
                   4*N*nu +    // u, u_lqr, r, r_wrk
                   5*nc +      // Dx, Cu, Dx_lqr, Cu_lqr, xi, p, b_wrk
@@ -847,9 +853,12 @@ void workspace_init(
     wrk->A = mem; mem+=N*nx*nx;
     wrk->Acl = mem; mem+=N*nx*nx;
     wrk->P = mem; mem+=N*nx*nx;
+    wrk->Q = mem; mem+=N*nx*nx;
     wrk->B = mem; mem+=N*nx*nu;
     wrk->K = mem; mem+=N*nx*nu;
+    wrk->S = mem; mem+=N*nx*nu;
     wrk->Lu = mem; mem+=N*nu*nu;
+    wrk->R = mem; mem+=N*nu*nu;
     wrk->w = mem; mem+=N*nx;
     wrk->Pw = mem; mem+=N*nx;
     wrk->x = mem; mem+=N*nx+nx;
@@ -904,6 +913,9 @@ void workspace_init(
     memcpy(wrk->B, B, N*nx*nu*sizeof(f64));
     memcpy(wrk->w, w, N*nx*sizeof(f64));
     memcpy(wrk->P, Q, N*nx*nx*sizeof(f64));
+    memcpy(wrk->Q, Q, N*nx*nx*sizeof(f64));
+    memcpy(wrk->S, S, N*nu*nx*sizeof(f64));
+    memcpy(wrk->R, R, N*nu*nu*sizeof(f64));
     memcpy(wrk->q, q, N*nx*sizeof(f64));
     memcpy(wrk->r, r, N*nu*sizeof(f64));
     memcpy(wrk->D, D, ncx*nx*sizeof(f64));
@@ -920,7 +932,7 @@ void workspace_init(
     wrk->as.n_active = 0;
 
     // Initialize LQR/Riccati data
-    solve_riccati(wrk, R, S);
+    solve_riccati(wrk);
     get_lqr_qr(wrk);
     solve_lqr(wrk, wrk->x_lqr, wrk->u_lqr);
     get_Cu_Dx(wrk, 0, wrk->x_lqr, wrk->u_lqr, wrk->Dx_lqr, wrk->Cu_lqr);
@@ -930,15 +942,15 @@ void workspace_free(workspace* wrk) {
     free(wrk->memory);
 }
 
-void solve_riccati(workspace* wrk, f64* R, f64* S) {
+void solve_riccati(workspace* wrk) {
     u32 N = wrk->N;
     u32 nx = wrk->nx;
     u32 nu = wrk->nu;
     f64* tmp1 = wrk->tmp1;
     f64* tmp2 = wrk->tmp2;
 
-    memcpy(wrk->Lu, R, N*nu*nu*sizeof(f64));
-    memcpy(wrk->K, S, N*nu*nx*sizeof(f64));
+    memcpy(wrk->Lu, wrk->R, N*nu*nu*sizeof(f64));
+    memcpy(wrk->K, wrk->S, N*nu*nx*sizeof(f64));
     memcpy(wrk->Acl, wrk->A, N*nx*nx*sizeof(f64));
     memset(wrk->Pw, 0, N*nx*sizeof(f64));
     for (i32 t=N-1; t>=0; t--) {
@@ -975,7 +987,7 @@ void solve_riccati(workspace* wrk, f64* R, f64* S) {
         for (u32 i=0; i<nx; ++i)
             for (u32 j=0; j<nx; ++j)
                 for (u32 k=0; k<nu; ++k)
-                    wrk->P[(t-1)*nx*nx + i*nx+j] -= S[t*nx*nu + k*nx + i] * wrk->K[t*nx*nu + k*nx + j];
+                    wrk->P[(t-1)*nx*nx + i*nx+j] -= wrk->S[t*nx*nu + k*nx + i] * wrk->K[t*nx*nu + k*nx + j];
         transpose(tmp1, wrk->P+(t-1)*nx*nx, nx, nx);
         for (u32 i=0; i<nx*nx; ++i) 
             wrk->P[(t-1)*nx*nx + i] = 0.5*(wrk->P[(t-1)*nx*nx + i] + tmp1[i]);
