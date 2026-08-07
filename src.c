@@ -57,7 +57,6 @@ typedef struct {
     f64* Lu;
     f64* K;
     f64* P;
-    f64* Acl;
     f64* Pw;
     f64* x_lqr;
     f64* u_lqr;
@@ -123,11 +122,14 @@ void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu);
 void workspace_free(workspace* wrk);
 void solve_riccati(workspace* wrk);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void trsv(f64* x, f64* L, u32 n, u32 stride);
 void trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void transpose(f64* dst, f64* src, u32 nrs, u32 ncs);
 void fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
+void syrk_nt_lo(f64* C, f64* A, f64* B, u32 nrc, u32 k, u32 ostride);
+void nsyrk_nt(f64* C, f64* A, f64* B, u32 nrc, u32 k, u32 ostride);
 void cholesky(f64* L, u32 n);
 void trsm(f64* X, f64* L, u32 nv, u32 nsys);
 void trsm_t(f64* X, f64* L, u32 nv, u32 nsys);
@@ -219,10 +221,8 @@ void update_problem_data(
         memcpy(wrk->w, w, wrk->N*wrk->nx*sizeof(f64));
     }
 
-    if (dynamics_was_updated || cost_was_updated) {
-        memcpy(wrk->P, wrk->Q, wrk->N*wrk->nx*wrk->nx*sizeof(f64));
+    if (dynamics_was_updated || cost_was_updated)
         solve_riccati(wrk);
-    }
     
     // If constraints were not updated but dH changed, rebuild
     // from scratch. If new dH turns out to be singular, reset WS.ù
@@ -402,10 +402,11 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
 
 void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     /*
-        M = [CU; DX]
-        where:
-            - CU[t, k] = C Lu[t]^{-T} if t=k, -C K[t]Acl[t-1] .. Acl[k] B if k < t.
-            - DX[t, k] = D Acl[t] ... Acl[k] B if k <= t.
+    M = [CU; DX]. 
+    CU rows are given by the du recursion initialized with
+    r[t] = C_{t,i}, r[tau!=t]=0, q=0, w=0.
+    DX rows are given by the du recursion initialized with
+    q[t] = D_{t,i}, q[tau!=t]=0, r=0, w=0.
     */
     u32 t = constr->t;
     u32 idx = constr->idx;
@@ -418,59 +419,52 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     f64* m_ptr = wrk->M + N*nu*M_idx + t*nu;
     
     if (constr->is_state) { // Need DX
-        // Initialize recursion state
+        // Initialize p
         memcpy(tmp1, wrk->D + wrk->cmx[t]*nx + idx*nx, nx*sizeof(f64));
-        
-        // Compute B' Di
-        memset(m_ptr, 0, nu*sizeof(f64));
-        fma_mv_t(m_ptr, wrk->B + t*nx*nu, tmp1, nu, nx, nu);
-        // Solve Lu x = B' Di
-        trsv(m_ptr, wrk->Lu + t*nu*nu, nu, nu);
-        // walk back along row of M.
-        m_ptr -= nu;
 
-        // Propagate through Acl recursion state
-        for (i32 tau=t-1; tau>=0; --tau) {
-            // state = Acl[tau]' state
-            memset(tmp2, 0, nx*sizeof(f64));
-            fma_mv_t(tmp2, wrk->Acl+(tau+1)*nx*nx, tmp1, nx, nx, nx);
-            swap(&tmp1, &tmp2);
-
-            // Compute B' state
+        // Propagate recursion state
+        for (i32 tau=t; tau>=0; --tau) {
+            // Compute B' p
             memset(m_ptr, 0, nu*sizeof(f64));
             fma_mv_t(m_ptr, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
-            // Solve Lu x = B' state
+            // Solve Lu du = B' p
             trsv(m_ptr, wrk->Lu+tau*nu*nu, nu, nu);
+            // p = A[tau]' p - K du
+            memset(tmp2, 0, nx*sizeof(f64));
+            fma_mv_t(tmp2, wrk->A+tau*nx*nx, tmp1, nx, nx, nx);
+            fms_mv(tmp2, wrk->K+tau*nx*nu, m_ptr, nx, nu, nu);
+            swap(&tmp1, &tmp2);
+
             // walk back along row of M.
             m_ptr -= nu;            
         }
-    } else { // Need DU
+    } else { // Need CU
         memcpy(m_ptr, wrk->C + wrk->cmu[t]*nu + idx*nu, nu*sizeof(f64));
         trsv(m_ptr, wrk->Lu+nu*nu*t, nu, nu);
         
-        // Initialize backward recursion state.
+        // Initialize p.
         if (t>0) {
             memset(tmp1, 0, nx*sizeof(f64));
-            fma_mv_t(tmp1, wrk->K+t*nu*nx, wrk->C+wrk->cmu[t]*nu+idx*nu, nx, nu, nx);
-            negate(tmp1, nx);
+            fms_mv(tmp1, wrk->K+t*nu*nx, m_ptr, nx, nu, nu);
         }
         // Walk back along row of M.
         m_ptr -= nu;
         
         // Start recursion
         for (i32 tau=t-1; tau>=0; --tau) {
-            // Compute B' state
+            // Compute B' p
             memset(m_ptr, 0, nu*sizeof(f64));
             fma_mv_t(m_ptr, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
-            // Solve Lu x = B' state
-            trsv(m_ptr, wrk->Lu+tau*nu*nu, nu, nu);
+            // Solve Lu x = B' p
+            trsv(m_ptr, wrk->Lu+tau*nu*nu, nu, nu);            
+            // p = A[tau]' p - K du
+            memset(tmp2, 0, nx*sizeof(f64));
+            fma_mv_t(tmp2, wrk->A+tau*nx*nx, tmp1, nx, nx, nx);
+            fms_mv(tmp2, wrk->K+tau*nx*nu, m_ptr, nx, nu, nu);
+            swap(&tmp1, &tmp2);        
+            
             // walk back along row of M.
             m_ptr -= nu;  
-
-            // state = Acl[tau]' state
-            memset(tmp2, 0, nx*sizeof(f64));
-            fma_mv_t(tmp2, wrk->Acl+tau*nx*nx, tmp1, nx, nx, nx);
-            swap(&tmp1, &tmp2);          
         }
     }
 }
@@ -681,32 +675,30 @@ void solve_lqr(workspace* wrk, f64* x, f64* u) {
     // Backward recursion
     for (i32 t=N-1; t>=0; t--) {
         /*
-            Compute u = - (R + B'PB)^{-1}(r + B'(p + Pw))
+            Compute du = Lu^{-1}(r + B'(p + Pw))
         */
         for (u32 i=0; i<nx; ++i) tmp1[i] += wrk->Pw[t*nx + i];
         fma_mv_t(u+t*nu, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
-        negate(u + t*nu, nu);
         trsv(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
-        trsv_t(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
 
         if (t==0) break;
         /*
-            Compute p = (A - BK)' (p + Pw) - K'r + q 
+            Compute p = A' (p + Pw) - K du + q 
         */
         for (u32 i=0; i<nx; ++i) tmp2[i] = wrk->q_wrk[(t-1)*nx + i];
-        fma_mv_t(tmp2, wrk->Acl+t*nx*nx, tmp1, nx, nx, nx);
+        fma_mv_t(tmp2, wrk->A+t*nx*nx, tmp1, nx, nx, nx);
+        fms_mv(tmp2, wrk->K+t*nx*nu, wrk->u+t*nu, nx, nu, nu);
         swap(&tmp1, &tmp2);
-        for (u32 j=0; j<nu; ++j) 
-            for (u32 i=0; i<nx; ++i) tmp1[i] -= wrk->K[t*nx*nu + j*nx + i] * wrk->r_wrk[t*nu + j];
     }
 
     // Forward recursion
     for (u32 t=0; t<N; ++t) {
         /*
-            u = -K x + du
+            u = -Lu^{-T}(K' x + du)
         */
-        for (u32 i=0; i<nu; ++i)
-            for (u32 j=0; j<nx; ++j) u[t*nu + i] -= wrk->K[t*nu*nx + i*nx + j] * x[t*nx + j];
+        fma_mv_t(wrk->u + t*nu, wrk->K+t*nx*nu, wrk->x+t*nx, nu, nx, nu);
+        trsv_t(wrk->u + t*nu, wrk->Lu+t*nu*nu, nu, nu);
+        negate(wrk->u+t*nu, nu);
         
         /*
             x = Ax + Bu + w
@@ -831,7 +823,7 @@ void workspace_init(
     /*
         Allocate statically sized memory
     */
-    u32 nfloats = 4*N*nx*nx + // A, P, Q, Acl
+    u32 nfloats = 3*N*nx*nx + // A, P, Q
                   3*N*nx*nu + // B, K, S
                   2*N*nu*nu +   // Lu, R
                   6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
@@ -842,7 +834,6 @@ void workspace_init(
     );
     f64* mem = (f64*) wrk->smemory;
     wrk->A = mem; mem+=N*nx*nx;
-    wrk->Acl = mem; mem+=N*nx*nx;
     wrk->P = mem; mem+=N*nx*nx;
     wrk->Q = mem; mem+=N*nx*nx;
     wrk->B = mem; mem+=N*nx*nu;
@@ -877,7 +868,6 @@ void workspace_init(
     memcpy(wrk->A, A, N*nx*nx*sizeof(f64));
     memcpy(wrk->B, B, N*nx*nu*sizeof(f64));
     memcpy(wrk->w, w, N*nx*sizeof(f64));
-    memcpy(wrk->P, Q, N*nx*nx*sizeof(f64));
     memcpy(wrk->Q, Q, N*nx*nx*sizeof(f64));
     memcpy(wrk->S, S, N*nu*nx*sizeof(f64));
     memcpy(wrk->R, R, N*nu*nu*sizeof(f64));
@@ -965,54 +955,42 @@ void solve_riccati(workspace* wrk) {
     f64* tmp2 = wrk->tmp2;
 
     memcpy(wrk->Lu, wrk->R, N*nu*nu*sizeof(f64));
-    memcpy(wrk->K, wrk->S, N*nu*nx*sizeof(f64));
-    memcpy(wrk->Acl, wrk->A, N*nx*nx*sizeof(f64));
+    memcpy(wrk->P, wrk->Q, N*nx*nx*sizeof(f64));
     memset(wrk->Pw, 0, N*nx*sizeof(f64));
     for (i32 t=N-1; t>=0; t--) {
         // Compute Lu = chol(R + B'PB)
         transpose(tmp2, wrk->B + t*nx*nu, nx, nu);
         memset(tmp1, 0, nx*nu*sizeof(f64));
         fma_mm_nt(tmp1, tmp2, wrk->P + t*nx*nx, nu, nx, nx, nx);
-        fma_mm_nt(wrk->Lu + t*nu*nu, tmp2, tmp1, nu, nu, nx, nu);
+        syrk_nt_lo(wrk->Lu + t*nu*nu, tmp2, tmp1, nu, nx, nu);
         cholesky(wrk->Lu + t*nu*nu, nu);
 
-        // Compute K = Lu^{-T}Lu^{-1}(S + B'PA)
+        // Compute K = (A'PB + S')Lu^{-T}
         transpose(tmp2, wrk->A + t*nx*nx, nx, nx);
-        fma_mm_nt(wrk->K+t*nx*nu, tmp1, tmp2, nu, nx, nx, nx);
-        trsm(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
+        transpose(wrk->K+t*nx*nu, wrk->S+t*nx*nu, nu, nx);
+        fma_mm_nt(wrk->K+t*nx*nu, tmp2, tmp1, nx, nu, nx, nu);
         trsm_t(wrk->K + t*nx*nu, wrk->Lu + t*nu*nu, nu, nx);
-
-        // Compute Acl = A - BK
-        for (u32 i=0; i<nx; ++i)
-            for (u32 j=0; j<nx; ++j)
-                for (u32 k=0; k<nu; ++k) 
-                    wrk->Acl[t*nx*nx + i*nx+j] -= wrk->B[t*nx*nu + i*nu + k] * wrk->K[t*nx*nu + k*nx + j];
 
         // Compute Pw
         fma_mv(wrk->Pw + t*nx, wrk->P + t*nx*nx, wrk->w + t*nx, nx, nx, nx);
 
         if (t==0) return;
-        // Compute P = Q + A'P Acl - S'K
+        // Compute P = Q + A'P A - K K'
         memset(tmp1, 0, nx*nx*sizeof(f64));
         fma_mm_nt(tmp1, tmp2, wrk->P+t*nx*nx, nx, nx, nx, nx);
-        for (u32 i=0; i<nx; ++i)
-            for (u32 j=0; j<nx; ++j)
-                for (u32 k=0; k<nx; ++k)
-                    wrk->P[(t-1)*nx*nx + i*nx+j] += tmp1[i*nx + k] * wrk->Acl[t*nx*nx + k*nx + j];
-        for (u32 i=0; i<nx; ++i)
-            for (u32 j=0; j<nx; ++j)
-                for (u32 k=0; k<nu; ++k)
-                    wrk->P[(t-1)*nx*nx + i*nx+j] -= wrk->S[t*nx*nu + k*nx + i] * wrk->K[t*nx*nu + k*nx + j];
-        transpose(tmp1, wrk->P+(t-1)*nx*nx, nx, nx);
-        for (u32 i=0; i<nx*nx; ++i) 
-            wrk->P[(t-1)*nx*nx + i] = 0.5*(wrk->P[(t-1)*nx*nx + i] + tmp1[i]);
-
+        syrk_nt_lo(wrk->P+(t-1)*nx*nx, tmp1, tmp2, nx, nx, nx);
+        nsyrk_nt(wrk->P+(t-1)*nx*nx, wrk->K+t*nx*nu, wrk->K+t*nx*nu, nx, nu, nu);
     }
 }
 
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     for (u32 i=0; i<ny; ++i)
         for (u32 j=0; j<nx; ++j) y[i] += A[i*stride + j] * x[j];
+}
+
+void fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
+    for (u32 i=0; i<ny; ++i)
+        for (u32 j=0; j<nx; ++j) y[i] -= A[i*stride + j] * x[j];
 }
 
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
@@ -1044,6 +1022,21 @@ void fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
         for (u32 j=0; j<nc; ++j)
             for (u32 l=0; l<k; ++l) 
                 C[i*ostride + j] += A[i*k + l] * B[j*k + l];
+}
+
+void syrk_nt_lo(f64* C, f64* A, f64* B, u32 nrc, u32 k, u32 ostride) {
+    for (u32 i=0; i<nrc; ++i)
+        for (u32 j=0; j<=i; ++j)
+            for (u32 l=0; l<k; ++l) 
+                C[i*ostride + j] += A[i*k + l] * B[j*k + l];
+}
+
+void nsyrk_nt(f64* C, f64* A, f64* B, u32 nrc, u32 k, u32 ostride) {
+    for (u32 i=0; i<nrc; ++i)
+        for (u32 j=0; j<=i; ++j) {
+            for (u32 l=0; l<k; ++l) C[i*ostride + j] -= A[i*k + l] * B[j*k + l];
+            C[j*ostride + i] = C[i*ostride + j];
+        }
 }
 
 void cholesky(f64* L, u32 n) {
