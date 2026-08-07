@@ -12,6 +12,7 @@ typedef int32_t i32;
 #define MAX_ITER 3
 #define ILL_CONDITIONED 4
 #define PW2(x) x*x
+#define MAX(x, y) (x > y ? x : y)
 
 typedef struct {
     i32 t;
@@ -25,6 +26,7 @@ typedef struct {
     constraint_t* xi2con; // For each dual variable, the corresponding constraint.
     u32* as_members;
     u32 n_active;
+    u32 max_t;
 } active_set;
 
 typedef struct {
@@ -133,6 +135,7 @@ void nsyrk_nt(f64* C, f64* A, f64* B, u32 nrc, u32 k, u32 ostride);
 void cholesky(f64* L, u32 n);
 void trsm_rt(f64* X, f64* L, u32 nv, u32 nsys);
 void negate(f64* v, u32 n);
+void add(f64* v, f64* w, u32 n);
 f64 dot(f64* v, f64* w, u32 n);
 void swap(f64** a, f64** b);
 
@@ -224,7 +227,7 @@ void update_problem_data(
         solve_riccati(wrk);
     
     // If constraints were not updated but dH changed, rebuild
-    // from scratch. If new dH turns out to be singular, reset WS.ù
+    // from scratch. If new dH turns out to be singular, reset WS.
     u32 corrupt_workspace = wrk->dH_singular; // Corrupt workspace due to non "SOLVE" return status.
     u32 new_dH_singular = !wrk->dH_singular && !constraints_were_updated && (cost_was_updated || dynamics_was_updated) && get_L_from_scratch(wrk);
     if (corrupt_workspace || new_dH_singular) reset_working_set(wrk);
@@ -349,6 +352,7 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     wrk->xi[wrk->as.n_active] = 0.0;
     set_active(wrk, &wrk->as.xi2con[wrk->as.n_active]);
     wrk->as.n_active += 1;
+    wrk->as.max_t = MAX(wrk->as.max_t, t);
 }
 
 void update_working_set_remove(workspace* wrk, u32 xi_idx) {
@@ -397,6 +401,10 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     constraint_t removed_constraint = {(i32)t, (i32)idx, is_state};
     set_inactive(wrk, &removed_constraint);
     wrk->as.n_active -= 1;
+    // Recompute max_t
+    wrk->as.max_t = 0;
+    for (u32 i=0; i<wrk->as.n_active; ++i)
+        wrk->as.max_t = MAX(wrk->as.max_t, wrk->as.xi2con[i].t);
 }
 
 void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
@@ -484,7 +492,7 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     // Write result into new row of L.
     memset(wrk->L + n_active*wrk->nc, 0, (n_active+1)*sizeof(f64));
     f64* m_ptr = wrk->M + n_active*N*nu;
-    fma_mv(wrk->L + n_active*wrk->nc, wrk->M, m_ptr, n_active, N*nu, N*nu);
+    fma_mv(wrk->L + n_active*wrk->nc, wrk->M, m_ptr, n_active, nu+nu*wrk->as.max_t, N*nu);
     wrk->L[n_active*wrk->nc + n_active] = dot(m_ptr, m_ptr, N*nu);
 }
 
@@ -548,8 +556,12 @@ u32 get_L_from_scratch(workspace* wrk) {
     }
 
     // Compute dH = MM'
-    memset(wrk->L, 0, n_active*wrk->nc*sizeof(f64));
-    syrk_nt_lo(wrk->L, wrk->M, wrk->M, n_active, wrk->N*wrk->nu, nc);
+    memset(wrk->L, 0, n_active*nc*sizeof(f64));
+    // Specialized syrk algorithm.
+    for (u32 i=0; i<n_active; ++i)
+        for (u32 j=0; j<=i; ++j)
+            for (u32 k=0; k<wrk->as.max_t*wrk->nu+wrk->nu; ++k)
+                wrk->L[i*nc+j] += wrk->M[i*wrk->N*wrk->nu + k] * wrk->M[j*wrk->N*wrk->nu + k];
 
     // Compute chol(dH), checking for singularity.
     for (u32 i=0; i<n_active; ++i) {
@@ -582,6 +594,7 @@ void reset_working_set(workspace* wrk) {
     for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
     wrk->as.n_active = 0;
     wrk->dH_singular = 0;
+    wrk->as.max_t = 0;
 }
 
 u32 is_dual_feasible(f64* p, u32 n) {
@@ -599,8 +612,33 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
         Computes argmin L(x, u, \lambda, \mu) and correspnding constraint slacks.
     */
 
-    get_lqr_qr(wrk);
-    solve_lqr(wrk, wrk->x, wrk->u);
+    if (wrk->as.n_active <= 32 || wrk->as.n_active < 4*MAX(wrk->nu,wrk->nx)) {
+        u32 N = wrk->N;
+        u32 nu = wrk->nu;
+        u32 nx = wrk->nx;
+        f64* u = wrk->u;
+        f64* x = wrk->x;
+        memset(u, 0, N*nu*sizeof(f64));
+        memset(x+nx, 0, N*nx*sizeof(f64));
+        // Get sqrt feedforwards du.
+        fma_mv_t(u, wrk->M, wrk->xi, wrk->as.max_t*nu+nu, wrk->as.n_active, N*nu);
+        // Forward recursion.
+        negate(u, nu);
+        trsv_t(u, wrk->Lu, nu, nu);
+        fma_mv(x+nx, wrk->B, u, nx, nu, nu);
+        for (u32 t=1; t<N; ++t) {
+            fma_mv_t(u+t*nu, wrk->K+t*nu*nx, x+t*nx, nu, nx, nu);
+            negate(u+t*nu, nu);
+            trsv_t(u+t*nu, wrk->Lu+t*nu*nu, nu, nu);
+            fma_mv(x+t*nx+nx, wrk->A+t*nx*nx, x+t*nx, nx, nx, nx);
+            fma_mv(x+t*nx+nx, wrk->B+t*nx*nu, u+t*nu, nx, nu, nu);
+        }
+        add(u, wrk->u_lqr, N*nu);
+        add(x + nx, wrk->x_lqr + nx, N*nx);
+    } else {
+        get_lqr_qr(wrk);
+        solve_lqr(wrk, wrk->x, wrk->u);
+    }
     get_Cu_Dx(wrk, 0, wrk->x, wrk->u, wrk->Dx, wrk->Cu);
     get_violated_constraint(wrk, constr);
 }
@@ -1057,6 +1095,10 @@ void trsm_rt(f64* X, f64* L, u32 nv, u32 nsys) {
 
 void negate(f64* v, u32 n) {
     for (u32 i=0; i<n; ++i) v[i] *= -1.0;
+}
+
+void add(f64* v, f64* w, u32 n) {
+    for (u32 i=0; i<n; ++i) v[i] += w[i];
 }
 
 f64 dot(f64* v, f64* w, u32 n) {
