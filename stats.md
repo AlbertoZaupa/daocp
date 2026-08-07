@@ -1,4 +1,4 @@
 OCP SOLVE TIMES:
-- quadruped: 20ms
-- atlas: 4.7ms
-- di: 18 us
+- quadruped: 21ms
+- atlas: 5ms
+- di: 20 us
