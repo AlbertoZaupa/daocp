@@ -41,6 +41,10 @@ def solve_ocp():
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
+    primal_violation = check_primal_feasibility(
+        res, dx0, A, B, w, D, C, d, c
+    )
+    print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
     print(f"Iterations until convergence: {res.info.iter}")
     print(f"Solve time: {res.info.solve_time:.3f} us")
 
