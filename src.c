@@ -21,8 +21,6 @@ typedef struct {
 } constraint_t;
 
 typedef struct {
-    i32* active_u; // For each time-index: (xi index active at t, corresponding constraint index).
-    i32* active_x;
     constraint_t* xi2con; // For each dual variable, the corresponding constraint.
     u32* as_members;
     u32 n_active;
@@ -106,7 +104,6 @@ u32 check_infeasibility(f64* p, u32 n);
 void solve_lqr(workspace* wrk, f64* x, f64* u);
 void get_Cu_Dx(workspace* wrk, u32 all, f64* x, f64* u, f64* Dx, f64* Cu);
 void get_lqr_qr(workspace* wrk);
-void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, u32* m, u32* cumm);
 u32 is_active(workspace* wrk, constraint_t* constr);
 void set_active(workspace* wrk, constraint_t* constr);
 void set_inactive(workspace* wrk, constraint_t* constr);
@@ -332,19 +329,6 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     u32 idx = constr->idx;
     u32 is_state = constr->is_state;
 
-    // Update ( t -> active constraints ) map.
-    if (is_state) {
-        u32 i=0;
-        for (; i<2*wrk->mx[t] && wrk->as.active_x[2*wrk->cmx[t] + i] >= 0; i+=2);
-        wrk->as.active_x[2*wrk->cmx[t] + i] = wrk->as.n_active;
-        wrk->as.active_x[2*wrk->cmx[t] + i + 1] = idx;
-    } else {
-        u32 i=0;
-        for (; i<2*wrk->mu[t] && wrk->as.active_u[2*wrk->cmu[t] + i] >= 0; i+=2);
-        wrk->as.active_u[2*wrk->cmu[t] + i] = wrk->as.n_active;
-        wrk->as.active_u[2*wrk->cmu[t] + i + 1] = idx;
-    }
-
     // Update ( xi_idx -> constraint ) map.
     constraint_t new_constraint = {(i32)t, (i32)idx, is_state};
     wrk->as.xi2con[wrk->as.n_active] = new_constraint;
@@ -364,36 +348,6 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     // Update (xi_idx -> constraint info) map.
     for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) 
         wrk->as.xi2con[(i-1)] = wrk->as.xi2con[i]; 
-
-    /* 
-        Update (t -> active constraints) map.
-    */
-    // Remove xi_idx entry from active_x/u.
-    i32* map = is_state ? wrk->as.active_x : wrk->as.active_u;
-    u32* nc = is_state ? wrk->mx : wrk->mu;
-    u32* cumc = is_state ? wrk->cmx : wrk->cmu;
-    map += 2*cumc[t];
-    u32 i = 0;
-    for (i=0; i<2*nc[t] && map[i] != xi_idx; i+=2) ;
-    for (; i<2*(nc[t]-1) && map[i] != -1; i+=2) {
-        map[i] = map[i+2];
-        map[i+1] = map[i+3];
-    }
-    map[2*(nc[t]-1)] = map[2*nc[t]-1] = -1;
-
-    // Update active_x/u to reflect new xi indexing;
-    nc = wrk->mu;
-    cumc = wrk->cmu;
-    map = wrk->as.active_u;
-    for (u32 t=0; t<wrk->N; ++t)
-        for (u32 i=0; i<2*nc[t] && map[2*cumc[t] + i] >= 0; i+=2) 
-            if (map[2*cumc[t] + i] > xi_idx) map[2*cumc[t] + i] -= 1;
-    nc = wrk->mx;
-    cumc = wrk->cmx;
-    map = wrk->as.active_x;
-    for (u32 t=0; t<wrk->N; ++t)
-        for (u32 i=0; i<2*nc[t] && map[2*cumc[t] + i] >= 0; i+=2) 
-            if (map[2*cumc[t] + i] > xi_idx) map[2*cumc[t] + i] -= 1;
 
     // Compact xi.
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
@@ -589,8 +543,6 @@ void get_b(workspace* wrk) {
 }
 
 void reset_working_set(workspace* wrk) {
-    for (u32 i=0; i<2*get_ncx(wrk); ++i) wrk->as.active_x[i] = -1;
-    for (u32 i=0; i<2*get_ncu(wrk); ++i) wrk->as.active_u[i] = -1;
     for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
     wrk->as.n_active = 0;
     wrk->dH_singular = 0;
@@ -783,26 +735,20 @@ void get_lqr_qr(workspace* wrk) {
     /*
         Compute terms r = C' \mu, q = D' \lam.
     */
-    i32* active_u = wrk->as.active_u;
-    i32* active_x = wrk->as.active_x;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+    constraint_t* xi2con = wrk->as.xi2con;
     memcpy(wrk->r_wrk, wrk->r, wrk->N*wrk->nu*sizeof(f64));
     memcpy(wrk->q_wrk, wrk->q, wrk->N*wrk->nx*sizeof(f64));
-    get_dual_linear_terms(wrk->r_wrk, active_u, wrk->C, wrk->xi, wrk->N, wrk->nu, wrk->mu, wrk->cmu);
-    get_dual_linear_terms(wrk->q_wrk, active_x, wrk->D, wrk->xi, wrk->N, wrk->nx, wrk->mx, wrk->cmx);
-}
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        u32 t = xi2con[i].t;
+        u32 idx = xi2con[i].idx;
+        u32 is_state = xi2con[i].is_state;
+        if (is_state) 
+            for (u32 j=0; j<nx; ++j) wrk->q_wrk[t*nx + j] += wrk->D[wrk->cmx[t]*nx + idx*nx + j] * wrk->xi[i];
+        else
+            for (u32 j=0; j<nu; ++j) wrk->r_wrk[t*nu + j] += wrk->C[wrk->cmu[t]*nu + idx*nu + j] * wrk->xi[i];
 
-void get_dual_linear_terms(f64* ref, i32* map, f64* mat, f64* xi, u32 N, u32 n, u32* m, u32* cumm) {
-    for (u32 t=0; t<N; ++t) {
-        for (u32 i=0; i<2*m[t]; i+=2) {
-            // Retrieve dual variable
-            i32 xi_idx = map[2*cumm[t] + i];
-            u32 mat_idx = map[2*cumm[t] + i + 1];
-            if (xi_idx < 0) break;
-            
-            // Accumulate ref += mat[mat_idx]' * dual_var
-            for (u32 j=0; j<n; ++j)
-                ref[t*n + j] += mat[cumm[t]*n + mat_idx*n + j] * xi[xi_idx];
-        }
     }
 }
 
@@ -953,7 +899,6 @@ void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->dmemory = malloc(
         nfloats*sizeof(f64) +
         nc*sizeof(u32) +              // active_set.as_members
-        (2*ncx + 2*ncu)*sizeof(i32) + // active_set.active_x/active_u
         nc*sizeof(constraint_t)       // active_set.xi2con
     );
     f64* mem = (f64*) wrk->dmemory;
@@ -974,8 +919,6 @@ void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->tmp2 = mem; mem+=tmp2_size;
     unsigned char* vmem = (unsigned char*) mem;
     wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
-    wrk->as.active_x = (i32*) vmem; vmem+=2*ncx*sizeof(i32); 
-    wrk->as.active_u = (i32*) vmem; vmem+=2*ncu*sizeof(i32); 
     wrk->as.xi2con = (constraint_t*) vmem; vmem+=nc*sizeof(constraint_t);
 }
 
