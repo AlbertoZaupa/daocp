@@ -13,6 +13,7 @@ typedef int32_t i32;
 #define ILL_CONDITIONED 4
 #define PW2(x) x*x
 #define MAX(x, y) (x > y ? x : y)
+#define MIN(x, y) (x < y ? x : y)
 
 typedef struct {
     i32 t;
@@ -74,6 +75,7 @@ typedef struct {
     u32* cmu;
     u32 N;
     u32 nc;
+    u32 W_stride;
     u32 max_iter;
 } workspace;
 
@@ -246,21 +248,21 @@ void solve_dual_qp(workspace* wrk) {
     for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->b_wrk[i];
 
     // Solve L y = -d
-    trsv(wrk->p, wrk->L, n_active, wrk->nc);
+    trsv(wrk->p, wrk->L, n_active, wrk->W_stride);
     // Solve L'p = y
-    trsv_t(wrk->p, wrk->L, n_active, wrk->nc);
+    trsv_t(wrk->p, wrk->L, n_active, wrk->W_stride);
 }
 
 u32 get_descent_dir(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
-    u32 nc = wrk->nc;
+    u32 W_stride = wrk->W_stride;
 
     // Solve LL'p = 0, p != 0. Assume L_{n_active, n_active} = 0.
     memset(wrk->p, 0, n_active*sizeof(f64));
     wrk->p[n_active-1] = 1.0;
     for (u32 i=0; i<n_active-1; ++i)
-        wrk->p[i] = -wrk->L[(n_active-1)*nc + i];
-    trsv_t(wrk->p, wrk->L, n_active-1, nc);
+        wrk->p[i] = -wrk->L[(n_active-1)*W_stride + i];
+    trsv_t(wrk->p, wrk->L, n_active-1, W_stride);
 
     // Enforce p' b < 0.
     f64 dotv = dot(wrk->p, wrk->b_wrk, n_active);
@@ -444,55 +446,55 @@ void get_dH_row(workspace* wrk, constraint_t* constr) {
     
     // Computation of new row of dH, given by (M' m, m'm).
     // Write result into new row of L.
-    memset(wrk->L + n_active*wrk->nc, 0, (n_active+1)*sizeof(f64));
+    memset(wrk->L + n_active*wrk->W_stride, 0, (n_active+1)*sizeof(f64));
     f64* m_ptr = wrk->M + n_active*N*nu;
-    fma_mv(wrk->L + n_active*wrk->nc, wrk->M, m_ptr, n_active, nu+nu*wrk->as.max_t, N*nu);
-    wrk->L[n_active*wrk->nc + n_active] = dot(m_ptr, m_ptr, N*nu);
+    fma_mv(wrk->L + n_active*wrk->W_stride, wrk->M, m_ptr, n_active, nu+nu*wrk->as.max_t, N*nu);
+    wrk->L[n_active*wrk->W_stride + n_active] = dot(m_ptr, m_ptr, N*nu);
 }
 
 void update_dH_chol_add(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     // Solve
-    trsv(wrk->L + n_active*wrk->nc, wrk->L, n_active, wrk->nc);
+    trsv(wrk->L + n_active*wrk->W_stride, wrk->L, n_active, wrk->W_stride);
     // Diagonal
-    wrk->L[n_active*wrk->nc + n_active] -= 
-            dot(wrk->L+n_active*wrk->nc, wrk->L+n_active*wrk->nc, n_active);
-    if (wrk->L[n_active*wrk->nc + n_active] < ZERO_TOL) {
+    wrk->L[n_active*wrk->W_stride + n_active] -= 
+            dot(wrk->L+n_active*wrk->W_stride, wrk->L+n_active*wrk->W_stride, n_active);
+    if (wrk->L[n_active*wrk->W_stride + n_active] < ZERO_TOL) {
         wrk->dH_singular = 1;
-        wrk->L[n_active*wrk->nc + n_active] = 0.0;
+        wrk->L[n_active*wrk->W_stride + n_active] = 0.0;
     }
-    wrk->L[n_active*wrk->nc + n_active] = sqrt(wrk->L[n_active*wrk->nc + n_active]);
+    wrk->L[n_active*wrk->W_stride + n_active] = sqrt(wrk->L[n_active*wrk->W_stride + n_active]);
 }
 
 void update_dH_chol_remove(workspace* wrk, u32 idx) {
     u32 n_active = wrk->as.n_active;
-    u32 nc = wrk->nc;
+    u32 W_stride = wrk->W_stride;
     f64* l = wrk->tmp1;
 
     // Remove row at idx.
     for (u32 i=idx+1; i<n_active; ++i)
-        memcpy(wrk->L+(i-1)*nc, wrk->L+i*nc, (i+1)*sizeof(f64));
+        memcpy(wrk->L+(i-1)*W_stride, wrk->L+i*W_stride, (i+1)*sizeof(f64));
 
     // Extract column[idx] at l. Fix bottom-right lower triangle
     for (u32 i=idx; i<n_active-1; ++i) {
-        l[i-idx] = wrk->L[i*nc + idx];
+        l[i-idx] = wrk->L[i*W_stride + idx];
         for (u32 j=idx+1; j<=i+1; ++j)
-            wrk->L[i*nc + j-1] = wrk->L[i*nc + j];
+            wrk->L[i*W_stride + j-1] = wrk->L[i*W_stride + j];
     }
 
     // Perform rank1 update of bottom-right lower triangle
     f64 lii, lii_new, a, b;
     for (u32 i=idx; i<n_active-1; ++i) {
-        lii = wrk->L[i*nc+i];
+        lii = wrk->L[i*W_stride+i];
         lii_new = sqrt(PW2(lii) + PW2(l[i-idx])); 
-        wrk->L[i*nc+i] = lii_new;
+        wrk->L[i*W_stride+i] = lii_new;
         a = l[i-idx] / lii_new;
         b = lii / lii_new;
         for (u32 j=i+1; j<n_active-1; ++j) {
             lii = l[j-idx];
-            lii_new = wrk->L[j*nc + i];
+            lii_new = wrk->L[j*W_stride + i];
             l[j-idx] = lii * b - lii_new * a;
-            wrk->L[j*nc + i] = b * lii_new + a * lii;
+            wrk->L[j*W_stride + i] = b * lii_new + a * lii;
         }
     }
 
@@ -501,7 +503,7 @@ void update_dH_chol_remove(workspace* wrk, u32 idx) {
 
 u32 get_L_from_scratch(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
-    u32 nc = wrk->nc;
+    u32 W_stride = wrk->W_stride;
 
     // Compute M from scratch
     for (u32 ci=0; ci<n_active; ++ci) {
@@ -510,22 +512,22 @@ u32 get_L_from_scratch(workspace* wrk) {
     }
 
     // Compute dH = MM'
-    memset(wrk->L, 0, n_active*nc*sizeof(f64));
+    memset(wrk->L, 0, n_active*W_stride*sizeof(f64));
     // Specialized syrk algorithm.
     for (u32 i=0; i<n_active; ++i)
         for (u32 j=0; j<=i; ++j)
             for (u32 k=0; k<wrk->as.max_t*wrk->nu+wrk->nu; ++k)
-                wrk->L[i*nc+j] += wrk->M[i*wrk->N*wrk->nu + k] * wrk->M[j*wrk->N*wrk->nu + k];
+                wrk->L[i*W_stride+j] += wrk->M[i*wrk->N*wrk->nu + k] * wrk->M[j*wrk->N*wrk->nu + k];
 
     // Compute chol(dH), checking for singularity.
     for (u32 i=0; i<n_active; ++i) {
-        f64* lii = wrk->L + i*nc + i;
+        f64* lii = wrk->L + i*W_stride + i;
         if (*lii < ZERO_TOL) return 1; // Detected singularity.
         *lii = sqrt(*lii);
-        for (u32 j=i+1; j<n_active; ++j) wrk->L[j*nc + i] /= *lii;
+        for (u32 j=i+1; j<n_active; ++j) wrk->L[j*W_stride + i] /= *lii;
         for (u32 j=i+1; j<n_active; ++j)
             for (u32 k=i+1; k<n_active; ++k)
-                wrk->L[j*nc + k] -= wrk->L[j*nc + i] * wrk->L[k*nc + i];
+                wrk->L[j*W_stride + k] -= wrk->L[j*W_stride + i] * wrk->L[k*W_stride + i];
     }
     return 0;
 }
@@ -886,40 +888,42 @@ void allocate_dynamic_workspace(workspace* wrk, u32* mx, u32* mu) {
     u32 ncx = get_ncx(wrk);
     u32 ncu = get_ncu(wrk);
     u32 nc = wrk->nc = ncx + ncu;
+    u32 W_stride = wrk->W_stride = MIN(nc, N*nu+1);
 
     u32 tmp2_size = nx * (nx > nu ? nx : nu);
-    u32 tmp1_size = nc > tmp2_size ? nc : tmp2_size;
-    u32 nfloats = 5*nc +          // Dx, Cu, Dx_lqr, Cu_lqr, xi, p, b_wrk
+    u32 tmp1_size = W_stride > tmp2_size ? W_stride : tmp2_size;
+    u32 nfloats = 2*nc +          // Dx, Cu, Dx_lqr, Cu_lqr
+                3*W_stride +      // xi, p, b_wrk
                 ncx*nx+ncu*nu + // D, C
                 ncx+ncu +       // d, c
-                nc*nc +         // L
-                nc*N*nu +       // M
+                W_stride*W_stride +         // L
+                W_stride*N*nu +       // M
                 tmp1_size +     // tmp1
                 tmp2_size;      // tmp2
     wrk->dmemory = malloc(
         nfloats*sizeof(f64) +
         nc*sizeof(u32) +              // active_set.as_members
-        nc*sizeof(constraint_t)       // active_set.xi2con
+        W_stride*sizeof(constraint_t)       // active_set.xi2con
     );
     f64* mem = (f64*) wrk->dmemory;
     wrk->Dx = mem; mem+=ncx;
     wrk->Dx_lqr = mem; mem+=ncx;
     wrk->Cu = mem; mem+=ncu;
     wrk->Cu_lqr = mem; mem+=ncu;
-    wrk->xi = mem; mem+=nc;
-    wrk->p = mem; mem+=nc;
-    wrk->b_wrk = mem; mem+=nc;
+    wrk->xi = mem; mem+=W_stride;
+    wrk->p = mem; mem+=W_stride;
+    wrk->b_wrk = mem; mem+=W_stride;
     wrk->D = mem; mem+=ncx*nx;
     wrk->C = mem; mem+=ncu*nu;
     wrk->d = mem; mem+=ncx;
     wrk->c = mem; mem+=ncu;
-    wrk->L = mem; mem+=nc*nc;
-    wrk->M = mem; mem+=nc*N*nu;
+    wrk->L = mem; mem+=W_stride*W_stride;
+    wrk->M = mem; mem+=W_stride*N*nu;
     wrk->tmp1 = mem; mem+=tmp1_size;
     wrk->tmp2 = mem; mem+=tmp2_size;
     unsigned char* vmem = (unsigned char*) mem;
     wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
-    wrk->as.xi2con = (constraint_t*) vmem; vmem+=nc*sizeof(constraint_t);
+    wrk->as.xi2con = (constraint_t*) vmem; vmem+=W_stride*sizeof(constraint_t);
 }
 
 void workspace_free(workspace* wrk) {
