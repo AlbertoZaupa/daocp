@@ -40,7 +40,7 @@ typedef struct {
     f64* Dx;
     f64* Cu;
     f64* p;
-    f64* b_wrk;
+    f64* dl;
     f64* r_wrk;
     f64* q_wrk;
     f64* M;
@@ -57,7 +57,6 @@ typedef struct {
     f64* deq;
     f64* H;
     f64* h;
-    f64* b;
     f64* A;
     f64* B;
     f64* w;
@@ -88,6 +87,8 @@ typedef struct {
     u32* equ;
     u32* ceqx;
     u32* cequ;
+    u32* rho;
+    u32* crho;
     u32 neq_x0;
     u32 N;
     u32 nc;
@@ -303,7 +304,7 @@ void solve_dual_qp(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     
     // copy d into p
-    for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->b_wrk[i];
+    for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->dl[i];
 
     // Solve L y = -d
     trsv(wrk->p, wrk->L, n_active, wrk->W_stride);
@@ -323,7 +324,7 @@ u32 get_descent_dir(workspace* wrk) {
     trsv_t(wrk->p, wrk->L, n_active-1, W_stride);
 
     // Enforce p' b < 0.
-    f64 dotv = dot(wrk->p, wrk->b_wrk, n_active);
+    f64 dotv = dot(wrk->p, wrk->dl, n_active);
     if (dotv >= -ZERO_TOL && dotv <= ZERO_TOL) return 1;
     if (dotv > ZERO_TOL)
         negate(wrk->p, n_active);
@@ -360,10 +361,10 @@ void add_constraint(workspace* wrk, constraint_t* constr) {
         Update dual linear term
     */
     if (is_state) {
-        wrk->b_wrk[wrk->as.n_active] = 
+        wrk->dl[wrk->as.n_active] = 
             wrk->d[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx];
     } else {
-        wrk->b_wrk[wrk->as.n_active] = 
+        wrk->dl[wrk->as.n_active] = 
             wrk->c[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx];
     }
 
@@ -375,7 +376,7 @@ void remove_constraint(workspace* wrk, u32 idx) {
     update_dH_chol_remove(wrk, idx);
     // Update linear term
     for (u32 i=idx+1; i<wrk->as.n_active; ++i)
-        wrk->b_wrk[i-1] = wrk->b_wrk[i];
+        wrk->dl[i-1] = wrk->dl[i];
     // Update M
     for (u32 i=idx+1; i<wrk->as.n_active; ++i)
         memcpy(wrk->M + (i-1)*2*wrk->N*wrk->nu, wrk->M + i*2*wrk->N*wrk->nu, 2*wrk->N*wrk->nu*sizeof(f64));
@@ -436,7 +437,7 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     u32 N = wrk->N;
     u32 nx = wrk->nx;
     u32 nu = wrk->nu;
-    memset(wrk->M + N*nu*M_idx, 0, N*nu*sizeof(f64));
+    memset(wrk->M + 2*N*nu*M_idx, 0, 2*N*nu*sizeof(f64));
     f64* m_ptr = wrk->M + 2*N*nu*M_idx + t*2*nu;
     
     if (constr->is_state) { // Need DX
@@ -445,7 +446,6 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
 
         // Propagate recursion state
         for (i32 tau=t; tau>=0; --tau) {
-            memset(m_ptr, 0, 2*nu*sizeof(f64));
             u32 rho = wrk->equ[tau];
             f64* u = m_ptr;
             f64* eta = m_ptr+nu;
@@ -470,7 +470,6 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
         }
     } else { // Need CU
         memcpy(m_ptr, wrk->C + wrk->cmu[t]*nu + idx*nu, nu*sizeof(f64));
-        memset(m_ptr+nu, 0, nu*sizeof(f64));
         LQRTRSV(m_ptr, m_ptr+nu, wrk->Lu+t*3*nu*nu, wrk->Lu+t*3*nu*nu+nu*nu, wrk->Lu+t*3*nu*nu + nu*(nu+wrk->equ[t]), nu, wrk->equ[t]);
         
         // Initialize p.
@@ -616,9 +615,9 @@ void get_b(workspace* wrk) {
         u32 idx = wrk->as.xi2con[i].idx;
         u32 is_state = wrk->as.xi2con[i].is_state;
         if (is_state) 
-            wrk->b_wrk[i] = wrk->d[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
+            wrk->dl[i] = wrk->d[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
         else
-            wrk->b_wrk[i] = wrk->c[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
+            wrk->dl[i] = wrk->c[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
     }
 }
 
@@ -827,7 +826,7 @@ void workspace_init(
     /*
         Allocate statically sized memory
     */
-    u32 tmp_floats = nx * MAX(nx, nu);
+    u32 tmp_floats = MAX(nx * MAX(nx, nu), nx+nu+1);
     u32 nfloats = 3*N*nx*nx + // A, P, Q
                   4*N*nx*nu + // B, K, S
                   5*N*nu*nu +   // Lu, R
@@ -836,7 +835,7 @@ void workspace_init(
                   2*tmp_floats; // riccati_tmp1, riccati_tmp2
     wrk->smemory = malloc(
         nfloats*sizeof(f64) +
-        8*N*sizeof(u32) // mx, cmx, mu, cmu, eqx, equ, ceqx, cequ
+        10*N*sizeof(u32) // mx, cmx, mu, cmu, eqx, equ, ceqx, cequ, rho, crho
     );
     f64* mem = (f64*) wrk->smemory;
     wrk->A = mem; mem+=N*nx*nx;
@@ -857,6 +856,8 @@ void workspace_init(
     wrk->q_wrk = mem; mem+=N*nx;
     wrk->r = mem; mem+=N*nu;
     wrk->r_wrk = mem; mem+=N*nu;
+    wrk->riccati_tmp1 = mem; mem+=tmp_floats;
+    wrk->riccati_tmp2 = mem; mem+=tmp_floats;
     unsigned char* vmem = (unsigned char*) mem; 
     wrk->mx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cmx = (u32*) vmem; vmem+=N*sizeof(u32);
@@ -866,6 +867,8 @@ void workspace_init(
     wrk->equ = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->ceqx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cequ = (u32*) vmem; vmem+=N*sizeof(u32);
+    wrk->rho = (u32*) vmem; vmem+=N*sizeof(u32);
+    wrk->crho = (u32*) vmem; vmem+=N*sizeof(u32);
 
     /*
         Allocate dynamically sized memory
@@ -876,7 +879,7 @@ void workspace_init(
     u32 ncx = get_ncx(wrk);
     u32 ncu = get_ncu(wrk);
     u32 neqx = get_neqx(wrk);
-    u32 nequ = get_neqx(wrk);
+    u32 nequ = get_nequ(wrk);
     memcpy(wrk->A, A, N*nx*nx*sizeof(f64));
     memcpy(wrk->B, B, N*nx*nu*sizeof(f64));
     memcpy(wrk->w, w, N*nx*sizeof(f64));
@@ -890,7 +893,7 @@ void workspace_init(
     memcpy(wrk->d, d, ncx*sizeof(f64));
     memcpy(wrk->c, c, ncu*sizeof(f64));
     memcpy(wrk->Deq, Deq, neqx*nx*sizeof(f64));
-    memcpy(wrk->Ceq, Deq, nequ*nu*sizeof(f64));
+    memcpy(wrk->Ceq, Ceq, nequ*nu*sizeof(f64));
     memcpy(wrk->deq, deq, neqx*sizeof(f64));
     memcpy(wrk->ceq, ceq, nequ*sizeof(f64));
     memset(wrk->x, 0, nx*sizeof(f64));
@@ -921,11 +924,11 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
 
     u32 tmp_size = W_stride;
     u32 nfloats = 2*nc +          // Dx, Cu, Dx_lqr, Cu_lqr
-                3*W_stride +      // xi, p, b_wrk
+                3*W_stride +      // xi, p, dl
                 ncx*nx+ncu*nu + // D, C
                 ncx+ncu +       // d, c
                 W_stride*W_stride + // L
-                W_stride*N*nu +       // M
+                W_stride*2*N*nu +       // M
                 tmp_size;       // solver_tmp
     wrk->ineq_memory = malloc(
         nfloats*sizeof(f64) +
@@ -939,13 +942,13 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->Cu_lqr = mem; mem+=ncu;
     wrk->xi = mem; mem+=W_stride;
     wrk->p = mem; mem+=W_stride;
-    wrk->b_wrk = mem; mem+=W_stride;
+    wrk->dl = mem; mem+=W_stride;
     wrk->D = mem; mem+=ncx*nx;
     wrk->C = mem; mem+=ncu*nu;
     wrk->d = mem; mem+=ncx;
     wrk->c = mem; mem+=ncu;
     wrk->L = mem; mem+=W_stride*W_stride;
-    wrk->M = mem; mem+=W_stride*N*nu;
+    wrk->M = mem; mem+=2*W_stride*N*nu;
     wrk->solver_tmp = mem; mem+=tmp_size;
     unsigned char* vmem = (unsigned char*) mem;
     wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
@@ -994,7 +997,7 @@ void solve_riccati(workspace* wrk) {
     u32* ceqx = wrk->ceqx;
     u32* cequ = wrk->cequ;
     f64* tmp1 = wrk->riccati_tmp1;
-    f64* tmp2 = wrk->riccati_tmp1;
+    f64* tmp2 = wrk->riccati_tmp2;
     f64* GEtmp = wrk->GEtmp;
 
     memcpy(wrk->P, wrk->Q, N*nx*nx*sizeof(f64));
@@ -1019,28 +1022,31 @@ void solve_riccati(workspace* wrk) {
         memset(GEtmp, 0, (nx+nu+1)*(equ[t]+eqx[t]+neq_x0)*sizeof(f64));
         for (u32 i=0; i<equ[t]; ++i) memcpy(GEtmp+i*(nx+nu+1), wrk->Ceq+(cequ[t]+i)*nu, nu*sizeof(f64));
         for (u32 i=0; i<equ[t]; ++i) GEtmp[i*(nx+nu+1)+nx+nu] = wrk->ceq[cequ[t]+i];
-        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1), wrk->Deq+t*ceqx[t]*nx, wrk->B+t*nx*nu, eqx[t], nu, nx, nx+nu+1);
-        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1)+nu, wrk->Deq+t*ceqx[t]*nx, wrk->A+t*nx*nx, eqx[t], nx, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1), wrk->Deq+ceqx[t]*nx, wrk->B+t*nx*nu, eqx[t], nu, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1)+nu, wrk->Deq+ceqx[t]*nx, wrk->A+t*nx*nx, eqx[t], nx, nx, nx+nu+1);
         for (u32 i=0; i<eqx[t]; ++i) GEtmp[(equ[t]+i)*(nx+nu+1)+nx+nu] = wrk->deq[ceqx[t]+i];
         fms_mv(GEtmp+equ[t]*(nx+nu+1)+nx+nu, wrk->Deq+ceqx[t]*nx, wrk->w+t*nx, eqx[t], nx, nx+nu+1);
         fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1), wrk->H, wrk->B+t*nx*nu, neq_x0, nu, nx, nx+nu+1);
-        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1), wrk->H, wrk->A+t*nx*nx, neq_x0, nx, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nu, wrk->H, wrk->A+t*nx*nx, neq_x0, nx, nx, nx+nu+1);
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(eqx[t]+equ[t]+i)*(nx+nu+1)+nx+nu] = wrk->h[i];
         fms_mv(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nx+nu, wrk->H, wrk->w+t*nx, neq_x0, nx, nx+nu+1);
         // Gaussian elimination
-        u32 rho = gaussian_elimination(GEtmp, wrk->H, equ[t]+eqx[t]+neq_x0, nu, nx+nu+1, nu);
-        equ[t] = rho;
+        u32 rho = gaussian_elimination(GEtmp, wrk->riccati_tmp1 , equ[t]+eqx[t]+neq_x0, nu, nx+nu+1, nu);
         // Copy new H, h.
         for (u32 i=rho; i<equ[t]+eqx[t]+neq_x0; ++i) {
-            memcpy(wrk->H + i*nx, GEtmp + i*(nx+nu+1) + nu, nx*sizeof(f64));
-            wrk->h[i] = GEtmp[i*(nx+nu+1)+nx+nu];
+            memcpy(wrk->H + (i-rho)*nx, GEtmp + i*(nx+nu+1) + nu, nx*sizeof(f64));
+            wrk->h[i-rho] = GEtmp[i*(nx+nu+1)+nx+nu];
         }
+        // Store -b in lambda.
+        for (u32 i=0; i<rho; ++i) wrk->u_eta_lqr[t*2*nu+nu+i] = -GEtmp[i*(nx+nu+1)+nx+nu];
+        neq_x0 = neq_x0+equ[t]+eqx[t] - rho;
+        wrk->rho[t] = rho;
 
         /* 
             Complete LDL of KKT matrix [(R+B'PB) G'; G 0]
         */
         for (u32 i=0; i<rho; ++i) 
-            memcpy(Lu01 + i*nu, GEtmp + i*(nx+nu+1), rho*sizeof(f64));
+            memcpy(Lu01 + i*nu, GEtmp + i*(nx+nu+1), nu*sizeof(f64));
         trsm_rt(Lu01, Lu00, nu, rho);
         f64* Lu11 = Lu01+rho*nu;
         memset(Lu11, 0, rho*rho*sizeof(f64));
@@ -1060,11 +1066,11 @@ void solve_riccati(workspace* wrk) {
         trsm_rt(K0, Lu00, nu, nx);
         // Compute K1 = (M' - K0 Lu01')Lu11^{-T}
         for (u32 i=0; i<rho; ++i)
-            for (u32 j=0; j<nx; ++i) K1[j*rho+i] = GEtmp[i*(nx+nu+1)+nu+j];
+            for (u32 j=0; j<nx; ++j) K1[j*rho+i] = GEtmp[i*(nx+nu+1)+nu+j];
         fms_mm_nt(K1, K0, Lu01, nx, rho, nu, rho);
         trsm_rt(K1, Lu11, rho, nx);
 
-        if (t==0) return;
+        if (t==0) break;
         /*
             Update P = Q + A'PA - Ku Ku' + Keta Keta'
         */
@@ -1077,7 +1083,7 @@ void solve_riccati(workspace* wrk) {
     // Set number of affine constraints on x0.
     wrk->neq_x0 = neq_x0;
     // Compute prexif sum of equality constraints.
-    compute_prefix_sum(wrk->cequ, wrk->equ, N);
+    compute_prefix_sum(wrk->crho, wrk->rho, N);
 }
 
 void solve_lqr(workspace* wrk) {
@@ -1090,7 +1096,7 @@ void solve_lqr(workspace* wrk) {
     // Initialize state
     memcpy(wrk->x_lqr+nx, wrk->w, N*nx*sizeof(f64));
     // Initialize costate
-    memcpy(tmp1, wrk->q_wrk + (N-1)*nx, nx*sizeof(f64)); 
+    memcpy(tmp1, wrk->q + (N-1)*nx, nx*sizeof(f64)); 
     memset(wrk->Cu_lqr, 0, get_ncu(wrk)*sizeof(f64));
     memset(wrk->Dx_lqr, 0, get_ncx(wrk)*sizeof(f64));
 
@@ -1107,16 +1113,17 @@ void solve_lqr(workspace* wrk) {
         f64* Lu11 = Lu01 + nu*rho;
         f64* Ku = wrk->K+2*t*nx*nu;
         f64* Keta = Ku+nx*nu;
-        memcpy(du, wrk->r_wrk+t*nu, nu*sizeof(f64));
+        memcpy(du, wrk->r+t*nu, nu*sizeof(f64));
+        fma_mv(tmp1, wrk->P+t*nx*nx, wrk->w+t*nx, nx, nx, nx);
         fma_mv_t(du, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
-        memset(deta, 0, rho*sizeof(f64));
+        // deta is initialized from the riccati.
         LQRTRSV(du, deta, Lu00, Lu01, Lu11, nu, rho);
 
         if (t==0) break;
         /*
             Compute p = A' (p + Pw) - Ku du + Keta deta + q 
         */
-        memcpy(tmp2, wrk->q_wrk+(t-1)*nx, nx*sizeof(f64));
+        memcpy(tmp2, wrk->q+(t-1)*nx, nx*sizeof(f64));
         fma_mv_t(tmp2, wrk->A+t*nx*nx, tmp1, nx, nx, nx);
         fms_mv(tmp2, Ku, du, nx, nu, nu);
         fma_mv(tmp2, Keta, deta, nx, rho, rho);
@@ -1157,7 +1164,7 @@ void solve_lqr(workspace* wrk) {
 }
 
 u32 eqcon_infeasible(workspace* wrk) {
-    memset(wrk->GEtmp, 0, wrk->neq_x0);
+    memset(wrk->GEtmp, 0, wrk->neq_x0*sizeof(f64));
     fma_mv(wrk->GEtmp, wrk->H, wrk->x_lqr, wrk->neq_x0, wrk->nx, wrk->nx);
     for (u32 i=0; i<wrk->neq_x0; ++i)
         if (ABS(wrk->GEtmp[i] - wrk->h[i]) > ZERO_TOL) return 1;
@@ -1266,7 +1273,7 @@ void trsm_rt(f64* X, f64* L, u32 nv, u32 nsys) {
 
 u32 gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R) {
     u32 rho = 0;
-    for (u32 i=0; i<nctot; ++i) {
+    for (u32 i=0; i<nc; ++i) {
         if (rho == R) break;
         // Find pivot
         u32 pi = rho-1;
