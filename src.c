@@ -57,6 +57,7 @@ typedef struct {
     f64* deq;
     f64* H;
     f64* h;
+    f64* b;
     f64* A;
     f64* B;
     f64* w;
@@ -238,8 +239,8 @@ void update_problem_data(
     - If the user wants to change any of Deq, deq, Ceq, ceq, it must provide again all four, 
       toghether with eqx, equ.
     */
-    u32 constraints_were_updated = D != 0;
-    u32 equalities_were_updated = Deq != 0;
+    u32 constraints_were_updated = D != 0 || C != 0;
+    u32 equalities_were_updated = Deq != 0 || Ceq != 0;
     u32 dynamics_was_updated = A != 0;
     u32 cost_was_updated = Q != 0;
 
@@ -446,7 +447,7 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
 
         // Propagate recursion state
         for (i32 tau=t; tau>=0; --tau) {
-            u32 rho = wrk->equ[tau];
+            u32 rho = wrk->rho[tau];
             f64* u = m_ptr;
             f64* eta = m_ptr+nu;
             f64* Lu00 = wrk->Lu+tau*3*nu*nu;
@@ -470,20 +471,20 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
         }
     } else { // Need CU
         memcpy(m_ptr, wrk->C + wrk->cmu[t]*nu + idx*nu, nu*sizeof(f64));
-        LQRTRSV(m_ptr, m_ptr+nu, wrk->Lu+t*3*nu*nu, wrk->Lu+t*3*nu*nu+nu*nu, wrk->Lu+t*3*nu*nu + nu*(nu+wrk->equ[t]), nu, wrk->equ[t]);
+        LQRTRSV(m_ptr, m_ptr+nu, wrk->Lu+t*3*nu*nu, wrk->Lu+t*3*nu*nu+nu*nu, wrk->Lu+t*3*nu*nu + nu*(nu+wrk->rho[t]), nu, wrk->rho[t]);
         
         // Initialize p.
         if (t>0) {
             memset(tmp1, 0, nx*sizeof(f64));
             fms_mv(tmp1, wrk->K+t*2*nu*nx, m_ptr, nx, nu, nu);
-            fma_mv(tmp1, wrk->K+t*2*nu*nx+nx*nu, m_ptr+nu, nx, wrk->equ[t], wrk->equ[t]);
+            fma_mv(tmp1, wrk->K+t*2*nu*nx+nx*nu, m_ptr+nu, nx, wrk->rho[t], wrk->rho[t]);
         }
         // Walk back along row of M.
         m_ptr -= 2*nu;
         
         // Start recursion
         for (i32 tau=t-1; tau>=0; --tau) {
-            u32 rho = wrk->equ[tau];
+            u32 rho = wrk->rho[tau];
             f64* u = m_ptr;
             f64* eta = u + nu;
             f64* Lu00 = wrk->Lu+tau*3*nu*nu;
@@ -654,10 +655,10 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
     fma_mv_t(u, wrk->M, wrk->xi, wrk->as.max_t*nu+nu, wrk->as.n_active, 2*N*nu);
     // Forward recursion.
     negate(u, nu);
-    LQRTRSV_T(u, u+nu, wrk->Lu, wrk->Lu+nu*nu, wrk->Lu+nu*(nu+wrk->equ[0]), nu, wrk->equ[0]);
+    LQRTRSV_T(u, u+nu, wrk->Lu, wrk->Lu+nu*nu, wrk->Lu+nu*(nu+wrk->rho[0]), nu, wrk->rho[0]);
     fma_mv(x+nx, wrk->B, u, nx, nu, nu);
     for (u32 t=1; t<N; ++t) {
-        u32 rho = wrk->equ[t];
+        u32 rho = wrk->rho[t];
         f64* u = wrk->u_eta+2*t*nu;
         f64* eta = u+nu;
         f64* x = wrk->x+t*nx;
@@ -831,7 +832,7 @@ void workspace_init(
                   4*N*nx*nu + // B, K, S
                   5*N*nu*nu +   // Lu, R
                   6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
-                  6*N*nu +     // u_eta, u_eta_lqr, r, r_wrk
+                  7*N*nu +     // u_eta, u_eta_lqr, r, r_wrk, b
                   2*tmp_floats; // riccati_tmp1, riccati_tmp2
     wrk->smemory = malloc(
         nfloats*sizeof(f64) +
@@ -856,6 +857,7 @@ void workspace_init(
     wrk->q_wrk = mem; mem+=N*nx;
     wrk->r = mem; mem+=N*nu;
     wrk->r_wrk = mem; mem+=N*nu;
+    wrk->b = mem; mem+=N*nu;
     wrk->riccati_tmp1 = mem; mem+=tmp_floats;
     wrk->riccati_tmp2 = mem; mem+=tmp_floats;
     unsigned char* vmem = (unsigned char*) mem; 
@@ -1037,8 +1039,8 @@ void solve_riccati(workspace* wrk) {
             memcpy(wrk->H + (i-rho)*nx, GEtmp + i*(nx+nu+1) + nu, nx*sizeof(f64));
             wrk->h[i-rho] = GEtmp[i*(nx+nu+1)+nx+nu];
         }
-        // Store -b in lambda.
-        for (u32 i=0; i<rho; ++i) wrk->u_eta_lqr[t*2*nu+nu+i] = -GEtmp[i*(nx+nu+1)+nx+nu];
+        // Store -b.
+        for (u32 i=0; i<rho; ++i) wrk->b[t*nu+i] = -GEtmp[i*(nx+nu+1)+nx+nu];
         neq_x0 = neq_x0+equ[t]+eqx[t] - rho;
         wrk->rho[t] = rho;
 
@@ -1105,7 +1107,7 @@ void solve_lqr(workspace* wrk) {
         /*
             Compute du = Lu^{-1}(r + B'(p + Pw))
         */
-        u32 rho = wrk->equ[t];
+        u32 rho = wrk->rho[t];
         f64* du = wrk->u_eta_lqr + 2*t*nu;
         f64* deta = du + nu;
         f64* Lu00 = wrk->Lu + 3*t*nu*nu;
@@ -1116,7 +1118,7 @@ void solve_lqr(workspace* wrk) {
         memcpy(du, wrk->r+t*nu, nu*sizeof(f64));
         fma_mv(tmp1, wrk->P+t*nx*nx, wrk->w+t*nx, nx, nx, nx);
         fma_mv_t(du, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
-        // deta is initialized from the riccati.
+        memcpy(deta, wrk->b+t*nu, rho*sizeof(f64));
         LQRTRSV(du, deta, Lu00, Lu01, Lu11, nu, rho);
 
         if (t==0) break;
@@ -1132,7 +1134,7 @@ void solve_lqr(workspace* wrk) {
 
     // Forward recursion
     for (u32 t=0; t<N; ++t) {
-        u32 rho = wrk->equ[t];
+        u32 rho = wrk->rho[t];
         f64* u = wrk->u_eta_lqr+2*t*nu;
         f64* eta = u + nu;
         f64* x = wrk->x_lqr+t*nx;
