@@ -33,16 +33,64 @@ Array fixed_array(py::handle value, const char* name,
     return out;
 }
 
+Array horizon_array(py::handle value, const char* name, u32 N,
+                    std::initializer_list<py::ssize_t> stage_shape) {
+    Array input = Array::ensure(value);
+    if (!input)
+        throw py::type_error(std::string(name) + " must be a real-valued array");
+
+    const py::ssize_t stage_ndim = static_cast<py::ssize_t>(stage_shape.size());
+    if (input.ndim() == stage_ndim + 1) {
+        if (input.shape(0) != N)
+            throw py::value_error(std::string(name) + " must contain N stages");
+        py::ssize_t axis = 1;
+        for (py::ssize_t size : stage_shape) {
+            if (input.shape(axis) != size)
+                throw py::value_error(std::string(name) + " has an inconsistent shape");
+            ++axis;
+        }
+        return input;
+    }
+
+    if (input.ndim() != stage_ndim)
+        throw py::value_error(std::string(name) +
+                              " must be a single-stage array or contain N stages");
+    py::ssize_t axis = 0;
+    py::ssize_t stage_size = 1;
+    std::vector<py::ssize_t> horizon_shape{static_cast<py::ssize_t>(N)};
+    for (py::ssize_t size : stage_shape) {
+        if (input.shape(axis) != size)
+            throw py::value_error(std::string(name) + " has an inconsistent shape");
+        horizon_shape.push_back(size);
+        stage_size *= size;
+        ++axis;
+    }
+
+    Array out(horizon_shape);
+    for (u32 t = 0; t < N; ++t)
+        std::copy_n(input.data(), stage_size,
+                    out.mutable_data() + static_cast<py::ssize_t>(t) * stage_size);
+    return out;
+}
+
 struct Ragged {
     Array dense;
     std::vector<double> values;
     std::vector<u32> rows;
     bool dense_backed = false;
+    double empty_value = 0.0;
 
     f64* data() {
-        return dense_backed ? const_cast<f64*>(dense.data()) : values.data();
+        if (dense_backed && dense.size()) return const_cast<f64*>(dense.data());
+        return values.empty() ? &empty_value : values.data();
     }
 };
+
+Ragged empty_ragged(u32 N) {
+    Ragged out;
+    out.rows.assign(N, 0);
+    return out;
+}
 
 Ragged ragged_matrix(py::handle value, u32 N, u32 columns, const char* name) {
     Ragged out;
@@ -50,14 +98,30 @@ Ragged ragged_matrix(py::handle value, u32 N, u32 columns, const char* name) {
 
     if (py::isinstance<py::array>(value)) {
         out.dense = Array::ensure(value);
-        out.dense_backed = true;
         if (!out.dense)
             throw py::type_error(std::string(name) + " must be real-valued");
+
+        if (out.dense.ndim() == 2) {
+            if (out.dense.shape(1) != columns)
+                throw py::value_error(std::string(name) + " has an inconsistent shape");
+            if (out.dense.shape(0) > std::numeric_limits<u32>::max())
+                throw py::value_error(std::string(name) + " has too many rows");
+            const u32 rows = static_cast<u32>(out.dense.shape(0));
+            out.rows.assign(N, rows);
+            out.values.reserve(static_cast<size_t>(N) * out.dense.size());
+            for (u32 t = 0; t < N; ++t)
+                out.values.insert(out.values.end(), out.dense.data(),
+                                  out.dense.data() + out.dense.size());
+            return out;
+        }
+
         if (out.dense.ndim() != 3 || out.dense.shape(0) != N ||
             out.dense.shape(2) != columns)
-            throw py::value_error(std::string(name) + " must have shape (N, m[t], n)");
+            throw py::value_error(std::string(name) +
+                                  " must have shape (m, n) or (N, m, n)");
         if (out.dense.shape(1) > std::numeric_limits<u32>::max())
             throw py::value_error(std::string(name) + " has too many rows");
+        out.dense_backed = true;
         out.rows.assign(N, static_cast<u32>(out.dense.shape(1)));
         return out;
     }
@@ -86,13 +150,26 @@ Ragged ragged_vector(py::handle value, u32 N, const char* name) {
 
     if (py::isinstance<py::array>(value)) {
         out.dense = Array::ensure(value);
-        out.dense_backed = true;
         if (!out.dense)
             throw py::type_error(std::string(name) + " must be real-valued");
+
+        if (out.dense.ndim() == 1) {
+            if (out.dense.shape(0) > std::numeric_limits<u32>::max())
+                throw py::value_error(std::string(name) + " is too long");
+            const u32 rows = static_cast<u32>(out.dense.shape(0));
+            out.rows.assign(N, rows);
+            out.values.reserve(static_cast<size_t>(N) * out.dense.size());
+            for (u32 t = 0; t < N; ++t)
+                out.values.insert(out.values.end(), out.dense.data(),
+                                  out.dense.data() + out.dense.size());
+            return out;
+        }
+
         if (out.dense.ndim() != 2 || out.dense.shape(0) != N)
-            throw py::value_error(std::string(name) + " must have shape (N, m[t])");
+            throw py::value_error(std::string(name) + " must have shape (m,) or (N, m)");
         if (out.dense.shape(1) > std::numeric_limits<u32>::max())
             throw py::value_error(std::string(name) + " is too long");
+        out.dense_backed = true;
         out.rows.assign(N, static_cast<u32>(out.dense.shape(1)));
         return out;
     }
@@ -120,6 +197,23 @@ void same_rows(const Ragged& matrix, const Ragged& bounds,
     if (matrix.rows != bounds.rows)
         throw py::value_error(std::string(matrix_name) + " and " + bounds_name +
                               " must have the same number of rows at every stage");
+}
+
+void optional_constraint_pair(py::handle matrix, py::handle bounds,
+                              u32 N, u32 columns,
+                              const char* matrix_name, const char* bounds_name,
+                              Ragged& parsed_matrix, Ragged& parsed_bounds) {
+    if (matrix.is_none() && bounds.is_none()) {
+        parsed_matrix = empty_ragged(N);
+        parsed_bounds = empty_ragged(N);
+        return;
+    }
+    if (matrix.is_none() || bounds.is_none())
+        throw py::value_error(std::string(matrix_name) + " and " + bounds_name +
+                              " must either both be provided or both be None");
+    parsed_matrix = ragged_matrix(matrix, N, columns, matrix_name);
+    parsed_bounds = ragged_vector(bounds, N, bounds_name);
+    same_rows(parsed_matrix, parsed_bounds, matrix_name, bounds_name);
 }
 
 bool symmetric(const double* A, u32 n) {
@@ -216,26 +310,27 @@ public:
               py::object Q, py::object R, py::object S,
               py::object q, py::object r, py::object D,
               py::object C, py::object d, py::object c,
+              py::object Deq, py::object Ceq,
+              py::object deq, py::object ceq,
               py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter)
         : initialized_(false), N_(N), nx_(nx), nu_(nu) {
         if (!N || !nx || !nu || !max_iter)
             throw py::value_error("N, nx, nu, and max_iter must be positive");
 
-        Array Ap = fixed_array(A, "A", {N, nx, nx});
-        Array Bp = fixed_array(B, "B", {N, nx, nu});
-        Array wp = fixed_array(w, "w", {N, nx});
-        Array Qp = fixed_array(Q, "Q", {N, nx, nx});
-        Array Rp = fixed_array(R, "R", {N, nu, nu});
-        Array Sp = fixed_array(S, "S", {N, nu, nx});
-        Array qp = fixed_array(q, "q", {N, nx});
-        Array rp = fixed_array(r, "r", {N, nu});
+        Array Ap = horizon_array(A, "A", N, {nx, nx});
+        Array Bp = horizon_array(B, "B", N, {nx, nu});
+        Array wp = horizon_array(w, "w", N, {nx});
+        Array Qp = horizon_array(Q, "Q", N, {nx, nx});
+        Array Rp = horizon_array(R, "R", N, {nu, nu});
+        Array Sp = horizon_array(S, "S", N, {nu, nx});
+        Array qp = horizon_array(q, "q", N, {nx});
+        Array rp = horizon_array(r, "r", N, {nu});
         Array x0p = fixed_array(x0, "x0", {nx});
-        Ragged Dp = ragged_matrix(D, N, nx, "D");
-        Ragged Cp = ragged_matrix(C, N, nu, "C");
-        Ragged dp = ragged_vector(d, N, "d");
-        Ragged cp = ragged_vector(c, N, "c");
-        same_rows(Dp, dp, "D", "d");
-        same_rows(Cp, cp, "C", "c");
+        Ragged Dp, Cp, dp, cp, Deqp, Ceqp, deqp, ceqp;
+        optional_constraint_pair(D, d, N, nx, "D", "d", Dp, dp);
+        optional_constraint_pair(C, c, N, nu, "C", "c", Cp, cp);
+        optional_constraint_pair(Deq, deq, N, nx, "Deq", "deq", Deqp, deqp);
+        optional_constraint_pair(Ceq, ceq, N, nu, "Ceq", "ceq", Ceqp, ceqp);
         check_cost(Qp, Rp, Sp, N, nx, nu);
 
         workspace_init(&wrk_, const_cast<f64*>(Ap.data()), const_cast<f64*>(Bp.data()),
@@ -243,8 +338,10 @@ public:
                        const_cast<f64*>(Rp.data()), const_cast<f64*>(Sp.data()),
                        const_cast<f64*>(qp.data()), const_cast<f64*>(rp.data()),
                        Dp.data(), Cp.data(), dp.data(), cp.data(),
+                       Deqp.data(), Ceqp.data(), deqp.data(), ceqp.data(),
                        const_cast<f64*>(x0p.data()), N, nx, nu,
-                       Dp.rows.data(), Cp.rows.data(), max_iter);
+                       Dp.rows.data(), Cp.rows.data(),
+                       Deqp.rows.data(), Ceqp.rows.data(), max_iter);
         initialized_ = true;
     }
 
@@ -262,8 +359,8 @@ public:
         const double micros = std::chrono::duration<double, std::micro>(stop - start).count();
         py::object owner = py::cast(this, py::return_value_policy::reference);
         SolveResult result{
-            py::array_t<double>({N_ + 1, nx_}, {sizeof(double) * nx_, sizeof(double)},
-                                wrk_.x, owner),
+            py::array_t<double>({N_, nx_}, {sizeof(double) * nx_, sizeof(double)},
+                                wrk_.x + nx_, owner),
             py::array_t<double>({N_, nu_}, {sizeof(double) * nu_, sizeof(double)},
                                 wrk_.u, owner),
             {status_string(wrk_.return_status), iters, micros}
@@ -274,32 +371,34 @@ public:
     void update(py::object x0, py::object q, py::object r,
                 py::object A, py::object B, py::object w,
                 py::object Q, py::object R, py::object S,
-                py::object D, py::object C, py::object d, py::object c) {
+                py::object D, py::object C, py::object d, py::object c,
+                py::object Deq, py::object Ceq,
+                py::object deq, py::object ceq) {
         Array x0p = fixed_array(x0, "x0", {nx_});
         Array qp, rp, Ap, Bp, wp, Qp, Rp, Sp;
-        Ragged Dp, Cp, dp, cp;
+        Ragged Dp, Cp, dp, cp, Deqp, Ceqp, deqp, ceqp;
 
         const bool has_q = !q.is_none();
         const bool has_r = !r.is_none();
-        if (has_q) qp = fixed_array(q, "q", {N_, nx_});
-        if (has_r) rp = fixed_array(r, "r", {N_, nu_});
+        if (has_q) qp = horizon_array(q, "q", N_, {nx_});
+        if (has_r) rp = horizon_array(r, "r", N_, {nu_});
 
         const bool dynamics = !A.is_none() || !B.is_none() || !w.is_none();
         if (dynamics && (A.is_none() || B.is_none() || w.is_none()))
             throw py::value_error("A, B, and w must be updated together");
         if (dynamics) {
-            Ap = fixed_array(A, "A", {N_, nx_, nx_});
-            Bp = fixed_array(B, "B", {N_, nx_, nu_});
-            wp = fixed_array(w, "w", {N_, nx_});
+            Ap = horizon_array(A, "A", N_, {nx_, nx_});
+            Bp = horizon_array(B, "B", N_, {nx_, nu_});
+            wp = horizon_array(w, "w", N_, {nx_});
         }
 
         const bool cost = !Q.is_none() || !R.is_none() || !S.is_none();
         if (cost && (Q.is_none() || R.is_none() || S.is_none()))
             throw py::value_error("Q, R, and S must be updated together");
         if (cost) {
-            Qp = fixed_array(Q, "Q", {N_, nx_, nx_});
-            Rp = fixed_array(R, "R", {N_, nu_, nu_});
-            Sp = fixed_array(S, "S", {N_, nu_, nx_});
+            Qp = horizon_array(Q, "Q", N_, {nx_, nx_});
+            Rp = horizon_array(R, "R", N_, {nu_, nu_});
+            Sp = horizon_array(S, "S", N_, {nu_, nx_});
             check_cost(Qp, Rp, Sp, N_, nx_, nu_);
         }
 
@@ -313,6 +412,20 @@ public:
             cp = ragged_vector(c, N_, "c");
             same_rows(Dp, dp, "D", "d");
             same_rows(Cp, cp, "C", "c");
+        }
+
+        const bool equalities = !Deq.is_none() || !Ceq.is_none() ||
+                                !deq.is_none() || !ceq.is_none();
+        if (equalities &&
+            (Deq.is_none() || Ceq.is_none() || deq.is_none() || ceq.is_none()))
+            throw py::value_error("Deq, Ceq, deq, and ceq must be updated together");
+        if (equalities) {
+            Deqp = ragged_matrix(Deq, N_, nx_, "Deq");
+            Ceqp = ragged_matrix(Ceq, N_, nu_, "Ceq");
+            deqp = ragged_vector(deq, N_, "deq");
+            ceqp = ragged_vector(ceq, N_, "ceq");
+            same_rows(Deqp, deqp, "Deq", "deq");
+            same_rows(Ceqp, ceqp, "Ceq", "ceq");
         }
 
         update_problem_data(
@@ -330,7 +443,13 @@ public:
             constraints ? Dp.data() : nullptr,
             constraints ? Cp.data() : nullptr,
             constraints ? dp.data() : nullptr,
-            constraints ? cp.data() : nullptr);
+            constraints ? cp.data() : nullptr,
+            equalities ? Deqp.rows.data() : nullptr,
+            equalities ? Ceqp.rows.data() : nullptr,
+            equalities ? Deqp.data() : nullptr,
+            equalities ? Ceqp.data() : nullptr,
+            equalities ? deqp.data() : nullptr,
+            equalities ? ceqp.data() : nullptr);
     }
 
 private:
@@ -362,11 +481,13 @@ PYBIND11_MODULE(daocp, m) {
     py::class_<OCPsolver>(m, "OCPsolver")
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, py::object, py::object, u32, u32, u32, u32>(),
+                      py::object, py::object, py::object, py::object, py::object,
+                      py::object, py::object, u32, u32, u32, u32>(),
              py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"), py::arg("R"),
              py::arg("S"), py::arg("q"), py::arg("r"), py::arg("D"), py::arg("C"),
-             py::arg("d"), py::arg("c"), py::arg("x0"), py::arg("N"), py::arg("nx"),
-             py::arg("nu"), py::arg("max_iter"))
+             py::arg("d"), py::arg("c"), py::arg("Deq"), py::arg("Ceq"),
+             py::arg("deq"), py::arg("ceq"), py::arg("x0"), py::arg("N"),
+             py::arg("nx"), py::arg("nu"), py::arg("max_iter"))
         .def("solve", &OCPsolver::solve)
         .def("update", &OCPsolver::update,
              py::arg("x0"), py::arg("q") = py::none(), py::arg("r") = py::none(),
@@ -374,5 +495,7 @@ PYBIND11_MODULE(daocp, m) {
              py::arg("w") = py::none(), py::arg("Q") = py::none(),
              py::arg("R") = py::none(), py::arg("S") = py::none(),
              py::arg("D") = py::none(), py::arg("C") = py::none(),
-             py::arg("d") = py::none(), py::arg("c") = py::none());
+             py::arg("d") = py::none(), py::arg("c") = py::none(),
+             py::arg("Deq") = py::none(), py::arg("Ceq") = py::none(),
+             py::arg("deq") = py::none(), py::arg("ceq") = py::none());
 }

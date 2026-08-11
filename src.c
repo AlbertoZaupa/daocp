@@ -14,7 +14,7 @@ typedef int32_t i32;
 #define PW2(x) x*x
 #define MAX(x, y) (x > y ? x : y)
 #define MIN(x, y) (x < y ? x : y)
-#define ABS(x) (x > 0 ? x : -x)
+#define ABS(x) (x > 0 ? x : -(x))
 
 typedef struct {
     i32 t;
@@ -1064,7 +1064,8 @@ void solve_riccati(workspace* wrk) {
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(eqx[t]+equ[t]+i)*(nx+nu+1)+nx+nu] = wrk->h[i];
         fms_mv(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nx+nu, wrk->H, wrk->w+t*nx, neq_x0, nx, nx+nu+1);
         // Gaussian elimination
-        u32 rho = gaussian_elimination(GEtmp, wrk->riccati_tmp1 , equ[t]+eqx[t]+neq_x0, nu, nx+nu+1, nu);
+        u32 rho = gaussian_elimination(GEtmp, wrk->riccati_tmp2,
+            equ[t]+eqx[t]+neq_x0, nu, nx+nu+1, nu);
         // Copy new H, h.
         for (u32 i=rho; i<equ[t]+eqx[t]+neq_x0; ++i) {
             memcpy(wrk->H + (i-rho)*nx, GEtmp + i*(nx+nu+1) + nu, nx*sizeof(f64));

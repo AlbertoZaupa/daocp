@@ -22,11 +22,9 @@ x_ref = data['x_ref']
 u_ref = data['u_ref']
 x0 = data['x0']
 C = np.vstack([np.eye(nu), -np.eye(nu)])
-D = np.zeros((0, nx))
 ub = data['d_u'] - u_ref
 lb = -data['d_u'] - u_ref
 c = np.hstack([ub, -lb])
-d = np.zeros(0)
 dx0 = x0 - x_ref
 q = np.zeros(nx)
 r = np.zeros(nu)
@@ -36,21 +34,23 @@ Ql = lN(Q)
 Ql[-1] = P.copy()
 
 def solve_ocp():
-    solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
-                        lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
+    solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, None, C, None, c,
+                        None, None, None, None,
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
     primal_violation = check_primal_feasibility(
-        res, dx0, A, B, w, D, C, d, c
+        res, dx0, A, B, w, None, C, None, c, None, None, None, None
     )
     print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
     print(f"Iterations until convergence: {res.info.iter}")
     print(f"Solve time: {res.info.solve_time:.3f} us")
 
 def solve_mpc():
-    solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
-                        lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
+    solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, None, C, None, c,
+                        None, None, None, None,
                         dx0, N, nx, nu, max_iter)
     state = dx0.copy()
     for t in range(300):

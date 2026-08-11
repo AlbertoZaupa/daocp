@@ -1,7 +1,17 @@
 import numpy as np
 
 
-def check_primal_feasibility(res, x0, A, B, w, D, C, d, c, tol=1e-6):
+def _stage(value, t, stage_ndim):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value[t])
+    value = np.asarray(value)
+    return value if value.ndim == stage_ndim else value[t]
+
+
+def check_primal_feasibility(res, x0, A, B, w, D, C, d, c,
+                             Deq=None, Ceq=None, deq=None, ceq=None, tol=1e-6):
     """Assert primal feasibility and return the largest constraint violation."""
     x = np.asarray(res.x)
     u = np.asarray(res.u)
@@ -9,18 +19,40 @@ def check_primal_feasibility(res, x0, A, B, w, D, C, d, c, tol=1e-6):
         "primal solution contains non-finite values"
     )
 
-    dynamics_residual = x[1:] - (x[:-1] @ A.T + u @ B.T + w)
-    equality_violation = max(
-        np.max(np.abs(x[0] - x0), initial=0.0),
-        np.max(np.abs(dynamics_residual), initial=0.0),
-    )
+    equality_violation = 0.0
+    inequality_violation = 0.0
+    previous_x = np.asarray(x0)
+    for t in range(len(u)):
+        dynamics_residual = (
+            x[t] - _stage(A, t, 2) @ previous_x
+            - _stage(B, t, 2) @ u[t] - _stage(w, t, 1)
+        )
+        equality_violation = max(
+            equality_violation,
+            np.max(np.abs(dynamics_residual), initial=0.0),
+        )
 
-    input_residual = u @ C.T - c
-    state_residual = x[1:] @ D.T - d
-    inequality_violation = max(
-        np.max(input_residual, initial=0.0),
-        np.max(state_residual, initial=0.0),
-    )
+        if Ceq is not None:
+            residual = _stage(Ceq, t, 2) @ u[t] - _stage(ceq, t, 1)
+            equality_violation = max(
+                equality_violation, np.max(np.abs(residual), initial=0.0)
+            )
+        if Deq is not None:
+            residual = _stage(Deq, t, 2) @ x[t] - _stage(deq, t, 1)
+            equality_violation = max(
+                equality_violation, np.max(np.abs(residual), initial=0.0)
+            )
+        if C is not None:
+            residual = _stage(C, t, 2) @ u[t] - _stage(c, t, 1)
+            inequality_violation = max(
+                inequality_violation, np.max(residual, initial=0.0)
+            )
+        if D is not None:
+            residual = _stage(D, t, 2) @ x[t] - _stage(d, t, 1)
+            inequality_violation = max(
+                inequality_violation, np.max(residual, initial=0.0)
+            )
+        previous_x = x[t]
 
     max_violation = max(equality_violation, inequality_violation)
     assert np.isfinite(max_violation) and max_violation <= tol, (
