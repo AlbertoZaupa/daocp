@@ -30,13 +30,14 @@ Ql = lN(Q)
 Ql[-1] = P.copy()
 
 def solve_ocp():
-    solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
-                        lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
+    solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, D, C, d, c,
+                        None, None, None, None,
                         x0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED"
     primal_violation = check_primal_feasibility(
-        res, x0, A, B, w, D, C, d, c
+        res, x0, A, B, w, D, C, d, c, None, None, None, None,
     )
     print(f"Optimal control over horizon {N}:")
     for t in range(N):
@@ -47,8 +48,9 @@ def solve_ocp():
     print(f"Solve time: {res.info.solve_time:.3f} us")
 
 def solve_mpc():
-    solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
-                        lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
+    solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, D, C, d, c,
+                        None, None, None, None,
                         x0, N, nx, nu, max_iter)
     state = x0.copy()
     for t in range(N):

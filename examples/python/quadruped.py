@@ -21,17 +21,15 @@ Q = data['Q']
 S = np.zeros((nu, nx))
 R = data['R']
 P = dare(A, B, Q, R)
-Dx = data["C_pf"][:, 32:]
+Deq = data["C_pf"][:, 32:]
+deq = np.zeros(12)
 Cu = np.block([
     [np.eye(20), np.zeros((20, 12))],
     [data["C_nf"][:, :32]]
 ])
 lbu = np.hstack([data["l"][-20:], data["l_nf"]])
-ubu = np.hstack([data["u"][-20:], np.inf*np.ones(20)])
-C = np.vstack([Cu, -Cu])
-D = np.vstack([Dx, -Dx])
-c = np.hstack([ubu, -lbu])
-d = np.zeros(24)
+C = np.vstack([-Cu, np.hstack([np.eye(20), np.zeros((20, 12))])])
+c = np.hstack([-lbu, data["u"][-20:]])
 dx0 = data["dX"][:52]
 q = np.zeros(nx)
 r = np.zeros(nu)
@@ -41,13 +39,14 @@ Ql = lN(Q)
 Ql[-1] = P.copy()
 
 def solve_ocp():
-    solver = OCPsolver(lN(A), lN(B), lN(w), Ql, lN(R), lN(S),
-                        lN(q), lN(r), lN(D), lN(C), lN(d), lN(c),
+    solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, None, C, None, c,
+                        Deq, None, deq, None,
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
     primal_violation = check_primal_feasibility(
-        res, dx0, A, B, w, D, C, d, c
+        res, dx0, A, B, w, None, C, None, c, Deq, None, deq, None
     )
     print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
     print(f"Iterations until convergence: {res.info.iter}")
