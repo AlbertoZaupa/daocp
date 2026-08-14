@@ -140,9 +140,7 @@ void get_b(workspace* wrk);
 void reset_working_set(workspace* wrk);
 u32 is_dual_feasible(f64* p, u32 n);
 void compute_slacks(workspace* wrk, constraint_t* constr);
-void get_violated_constraint(workspace* wrk, constraint_t* constr);
 u32 check_infeasibility(f64* p, u32 n);
-void get_Cu_Dx(workspace* wrk);
 u32 is_active(workspace* wrk, constraint_t* constr);
 void set_active(workspace* wrk, constraint_t* constr);
 void set_inactive(workspace* wrk, constraint_t* constr);
@@ -666,7 +664,8 @@ u32 is_dual_feasible(f64* p, u32 n) {
 
 void compute_slacks(workspace* wrk, constraint_t* constr) {
     /*
-        Computes argmin L(x, u, \lambda, \mu) and correspnding constraint slacks.
+        Computes argmin L(x, u, \lambda, \mu). During the forward
+        recursion, return as soon as an inactive constraint is violated.
     */
 
     u32 N = wrk->N;
@@ -679,6 +678,8 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
     struct blasfeo_dvec v1;
     memset(u, 0, N*nu*sizeof(f64));
     memset(eta, 0, wrk->neta*sizeof(f64));
+    memset(x, 0, nx*sizeof(f64));
+    constr->t = -1;
     // Get sqrt feedforwards (du, deta).
     u32 u_cols = (wrk->as.max_t+1)*nu;
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
@@ -692,13 +693,9 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
         v1.pa = wrk->Meta + i*wrk->neta;
         blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
     }
-    // Forward recursion.
-    v0.pa = u; v1.pa = eta;
-    blasfeo_dvecsc(nu, -1.0, &v0, 0);
-    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
-    v1.pa = x+nx;
-    blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0); 
-    for (u32 t=1; t<N; ++t) {
+    // Forward recursion. The vectors below contain the response to the active
+    // multipliers; add the precomputed LQR contribution when testing slacks.
+    for (u32 t=0; t<N; ++t) {
         u32 rho = wrk->rho[t];
         f64* u = wrk->u+t*nu;
         f64* eta = wrk->eta+wrk->crho[t];
@@ -709,65 +706,56 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
         blasfeo_dgemv_t(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u; v1.pa = eta;
         TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
-        v1.pa = x+nx;
+
+        // Input constraints are available as soon as u[t] is computed.
+        for (u32 i=0; i<wrk->mu[t]; ++i) {
+            constraint_t candidate = {(i32)t, (i32)i, 0};
+            u32 ci = wrk->cmu[t] + i;
+            if (is_active(wrk, &candidate)) {
+                wrk->Cu[ci] = wrk->c[ci];
+                continue;
+            }
+            v0.pa = wrk->C + ci*nu;
+            v1.pa = u;
+            wrk->Cu[ci] = wrk->Cu_lqr[ci] +
+                blasfeo_ddot(nu, &v0, 0, &v1, 0);
+            if (wrk->Cu[ci] - wrk->c[ci] > ZERO_TOL) {
+                *constr = candidate;
+                return;
+            }
+        }
+
+        v0.pa = u; v1.pa = x+nx;
         blasfeo_dgemv_t(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
         v0.pa = x;
         blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+
+        // State constraints are available as soon as x[t+1] is computed.
+        for (u32 i=0; i<wrk->mx[t]; ++i) {
+            constraint_t candidate = {(i32)t, (i32)i, 1};
+            u32 ci = wrk->cmx[t] + i;
+            if (is_active(wrk, &candidate)) {
+                wrk->Dx[ci] = wrk->d[ci];
+                continue;
+            }
+            v0.pa = wrk->D + ci*nx;
+            v1.pa = x+nx;
+            wrk->Dx[ci] = wrk->Dx_lqr[ci] +
+                blasfeo_ddot(nx, &v0, 0, &v1, 0);
+            if (wrk->Dx[ci] - wrk->d[ci] > ZERO_TOL) {
+                *constr = candidate;
+                return;
+            }
+        }
     }
+
+    // No violation was found, so recover the full solution trajectory.
     v0.pa = u; v1.pa = wrk->u_lqr;
     blasfeo_daxpy(N*nu, 1.0, &v1, 0, &v0, 0, &v0, 0); 
     v0.pa = eta, v1.pa = wrk->eta_lqr;
     blasfeo_daxpy(wrk->neta, 1.0, &v1, 0, &v0, 0, &v0, 0); 
     v0.pa = x + nx; v1.pa = wrk->x_lqr + nx;
     blasfeo_daxpy(N*nx, 1.0, &v1, 0, &v0, 0, &v0, 0); 
-    get_Cu_Dx(wrk);
-    get_violated_constraint(wrk, constr);
-}
-
-void get_violated_constraint(workspace* wrk, constraint_t* constr) {
-    // Return most violated constraint
-    i32 tu = -1;
-    i32 tx = -1;
-    i32 idxu = -1;
-    i32 idxx = -1;
-    f64 maxu = -1;
-    f64 maxx = -1;
-
-    /*
-        Check Cu
-    */
-    for (u32 tau=0; tau<wrk->N; ++tau)
-        for (u32 i=0; i<wrk->mu[tau]; ++i) {
-            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] - wrk->c[wrk->cmu[tau] + i];
-            if (tmp > ZERO_TOL && tmp > maxu) {
-                maxu = tmp;
-                idxu = i;
-                tu = tau;
-            }
-    }
-    
-    /*
-        Check Dx
-    */
-    for (u32 tau=0; tau<wrk->N; ++tau)
-        for (u32 i=0; i<wrk->mx[tau]; ++i) {
-            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] - wrk->d[wrk->cmx[tau] + i];
-            if (tmp > ZERO_TOL && tmp > maxx) {
-                maxx = tmp;
-                idxx = i;
-                tx = tau;
-            }
-    }
-
-    if (maxx > maxu) {
-        constr->idx = idxx;
-        constr->t = tx;
-        constr->is_state = 1;
-    } else {
-        constr->idx = idxu;
-        constr->t = tu;
-        constr->is_state = 0;
-    }
 }
 
 u32 check_infeasibility(f64* p, u32 n) {
@@ -775,43 +763,6 @@ u32 check_infeasibility(f64* p, u32 n) {
         if (p[i] < -ZERO_TOL) return 0;
 
     return 1; 
-}
-
-void get_Cu_Dx(workspace* wrk) {
-    u32 N = wrk->N;
-    u32 nx = wrk->nx;
-    u32 nu = wrk->nu;
-    u32* mx = wrk->mx;
-    u32* cmx = wrk->cmx;
-    u32* mu = wrk->mu;
-    u32* cmu = wrk->cmu;
-    f64* u = wrk->u;
-    f64* x = wrk->x;
-    f64* Cu = wrk->Cu;
-    f64* Dx = wrk->Dx;
-    struct blasfeo_dvec v0;
-    struct blasfeo_dvec v1;
-
-    for (u32 t=0; t<N; ++t) {
-        for (u32 i=0; i<mu[t]; ++i) {
-            constraint_t constraint = {(i32)t, (i32)i, 0};
-            if (is_active(wrk, &constraint)) Cu[cmu[t] + i] = wrk->c[cmu[t] + i];
-            else {
-                v0.pa = wrk->C + cmu[t]*nu + i*nu;
-                v1.pa = u + t*nu;
-                Cu[cmu[t]+i] = blasfeo_ddot(nu, &v0, 0, &v1, 0);
-            }
-        }
-        for (u32 i=0; i<mx[t]; ++i) {
-            constraint_t constraint = {(i32)t, (i32)i, 1};
-            if (is_active(wrk, &constraint)) Dx[cmx[t] + i] = wrk->d[cmx[t] + i];
-            else {
-                v0.pa = wrk->D + cmx[t]*nx + i*nx;
-                v1.pa = x + t*nx + nx;
-                Dx[cmx[t]+i] = blasfeo_ddot(nx, &v0, 0, &v1, 0); 
-            }
-        }
-    }
 }
 
 u32 is_active(workspace* wrk, constraint_t* constr) {
