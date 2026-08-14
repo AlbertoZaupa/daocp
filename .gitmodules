@@ -1,0 +1,3 @@
+[submodule "blasfeo"]
+	path = blasfeo
+	url = https://github.com/AlbertoZaupa/blasfeo.git	

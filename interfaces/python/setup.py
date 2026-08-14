@@ -13,8 +13,9 @@ setup(
         Extension(
             "daocp",
             [str(root / "interfaces/python/daocp.cpp")],
-            include_dirs=[pybind11.get_include(), str(root)],
-            depends=[str(root / "src.c")],
+            include_dirs=[pybind11.get_include(), str(root), str(root/"blasfeo/include")],
+            depends=[str(root / "src.c"), str(root / "lib/libblasfeo.a")],
+            extra_objects=[str(root / "lib/libblasfeo.a")],
             language="c++",
             extra_compile_args=["-O3"],
         )
