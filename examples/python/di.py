@@ -28,6 +28,7 @@ N = 20
 lN = lambda a: [a.copy() for i in range(N)]
 Ql = lN(Q)
 Ql[-1] = P.copy()
+nreps = 1000
 
 def solve_ocp():
     solver = OCPsolver(A, B, w, Ql, R, S,
@@ -47,6 +48,17 @@ def solve_ocp():
     print(f"Iterations until convergence: {res.info.iter}")
     print(f"Solve time: {res.info.solve_time:.3f} us")
 
+def time_ocp():
+    total = 0
+    for i in range(nreps):
+        solver = OCPsolver(A, B, w, Ql, R, S,
+                        q, r, D, C, d, c,
+                        None, None, None, None,
+                        x0, N, nx, nu, max_iter)
+        res = solver.solve()
+        total += res.info.solve_time
+    print(f"Average solve time: {(total/nreps):3f} us.")
+
 def solve_mpc():
     solver = OCPsolver(A, B, w, Ql, R, S,
                         q, r, D, C, d, c,
@@ -65,4 +77,4 @@ def solve_mpc():
     print(f"\nFinal state:\n{state}")
     
 if __name__ == '__main__':
-    solve_ocp()
+    time_ocp()
