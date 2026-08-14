@@ -2,9 +2,13 @@ PYTHON ?= $(shell command -v python >/dev/null 2>&1 && echo python || echo pytho
 
 export PYTHONPATH := $(CURDIR)/lib:$(PYTHONPATH)
 
+# Machine-local overrides can be placed in config.mk. 
+-include config.mk
+BLASFEO_TARGET ?= GENERIC
+
 .PHONY: clean
 
-BLASFEO = lib/libblasfeo.a
+BLASFEO := lib/libblasfeo.a
 
 pywrapper: $(BLASFEO)
 	@$(PYTHON) -c "import pybind11" 2>/dev/null || \
@@ -14,12 +18,13 @@ pywrapper: $(BLASFEO)
 	$(PYTHON) interfaces/python/setup.py build_ext \
 		--build-lib lib --build-temp build
 
-$(BLASFEO):
-	@cd blasfeo && make static_library 
-	@mv blasfeo/lib/libblasfeo.a lib/
+$(BLASFEO): 
+	@mkdir -p $(@D)
+	$(MAKE) -C blasfeo TARGET="$(BLASFEO_TARGET)" static_library
+	@cp blasfeo/lib/libblasfeo.a $@
 
 clean:
 	$(RM) -r build
 	$(RM) lib/daocp*.so
-	$(MAKE) -C blasfeo clean
 	$(RM) lib/libblasfeo.a
+	$(MAKE) -C blasfeo clean

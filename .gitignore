@@ -1,4 +1,5 @@
 *.o
+config.mk
 lib/*
 build/*
 examples/python/__pycache__/*
