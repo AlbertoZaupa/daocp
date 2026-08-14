@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <blasfeo.h>
 typedef uint32_t u32;
 typedef double f64;
 typedef int32_t i32;
@@ -27,6 +28,7 @@ typedef struct {
     u32* as_members;
     u32 n_active;
     u32 max_t;
+    struct blasfeo_dvec a;
 } active_set;
 
 typedef struct {
@@ -60,23 +62,27 @@ typedef struct {
     f64* H;
     f64* h;
     f64* b;
-    f64* A;
-    f64* B;
+    struct blasfeo_dmat* A;
+    struct blasfeo_dmat* B;
     f64* w;
-    f64* Q;
-    f64* R;
-    f64* S;
-    f64* Lu;
-    f64* K;
-    f64* P;
+    struct blasfeo_dmat* Q;
+    struct blasfeo_dmat* R;
+    struct blasfeo_dmat* S;
+    struct blasfeo_dmat* Lu;
+    struct blasfeo_dmat* Ku;
+    struct blasfeo_dmat* Ke;
+    struct blasfeo_dmat* P;
     f64* Pw;
     f64* x_lqr;
     f64* u_lqr;
     f64* eta_lqr;
     f64* Dx_lqr;
     f64* Cu_lqr;
-    f64* riccati_tmp1;
-    f64* riccati_tmp2;
+    struct blasfeo_dmat* riccati_tmp1;
+    struct blasfeo_dmat* riccati_tmp2;
+    struct blasfeo_dmat* riccati_tmp3;
+    struct blasfeo_dmat* riccati_tmp4;
+    struct blasfeo_dmat* riccati_tmp5;
     f64* solver_tmp;
     f64* GEtmp;
     u32 return_status;
@@ -443,79 +449,58 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     */
     u32 t = constr->t;
     u32 idx = constr->idx;
-    f64* tmp1 = wrk->riccati_tmp1;
-    f64* tmp2 = wrk->riccati_tmp2;
+    f64* tmp1 = wrk->riccati_tmp1->dA;
+    f64* tmp2 = wrk->riccati_tmp2->dA;
     u32 N = wrk->N;
     u32 nx = wrk->nx;
     u32 nu = wrk->nu;
     f64* Mu = wrk->Mu + N*nu*M_idx;
     f64* Meta = wrk->Meta + wrk->neta*M_idx;
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
     memset(Mu, 0, N*nu*sizeof(f64));
     memset(Meta, 0, wrk->neta*sizeof(f64));
+    i32 tau;
     
     if (constr->is_state) { // Need DX
         // Initialize p
         memcpy(tmp1, wrk->D + wrk->cmx[t]*nx + idx*nx, nx*sizeof(f64));
-
-        // Propagate recursion state
-        for (i32 tau=t; tau>=0; --tau) {
-            u32 rho = wrk->rho[tau];
-            f64* u = Mu + tau*nu;
-            f64* eta = Meta + wrk->crho[tau];
-            f64* Lu00 = wrk->Lu+tau*3*nu*nu;
-            f64* Lu01 = Lu00+nu*nu;
-            f64* Lu11 = Lu01+nu*rho;
-            f64* Ku = wrk->K+tau*2*nx*nu;
-            f64* Keta = Ku + nx*nu;
-            // Compute B' p
-            fma_mv_t(u, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
-            // Solve Lu [du; deta] = [B' p; 0]
-            LQRTRSV(u, eta, Lu00, Lu01, Lu11, nu, rho);
-            // p = A[tau]' p - Ku du + Keta deta
-            memset(tmp2, 0, nx*sizeof(f64));
-            fma_mv_t(tmp2, wrk->A+tau*nx*nx, tmp1, nx, nx, nx);
-            fms_mv(tmp2, Ku, u, nx, nu, nu);
-            fma_mv(tmp2, Keta, eta, nx, rho, rho);
-            swap(&tmp1, &tmp2);
-        }
+        tau = t;
     } else { // Need CU
+        tau = t-1;
         f64* u = Mu + t*nu;
         f64* eta = Meta + wrk->crho[t];
         u32 rho = wrk->rho[t];
-        f64* Lu00 = wrk->Lu+t*3*nu*nu;
-        f64* Lu01 = Lu00+nu*nu;
-        f64* Lu11 = Lu01+nu*rho;
-        memcpy(u, wrk->C + wrk->cmu[t]*nu + idx*nu, nu*sizeof(f64));
-        LQRTRSV(u, eta, Lu00, Lu01, Lu11, nu, rho);
+        v1.pa = wrk->C + wrk->cmu[t]*nu + idx*nu;
+        v0.pa = u;
+        blasfeo_dtrsv_lnn(nu+rho, wrk->Lu+t, 0, 0, &v1, 0, &v0, 0);
         
         // Initialize p.
         if (t>0) {
-            memset(tmp1, 0, nx*sizeof(f64));
-            fms_mv(tmp1, wrk->K+t*2*nu*nx, u, nx, nu, nu);
-            fma_mv(tmp1, wrk->K+t*2*nu*nx+nx*nu, eta, nx, rho, rho);
+            v1.pa = tmp1;
+            blasfeo_dgemv_n(nx, nu, -1.0, wrk->Ku+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+            v0.pa = eta;
+            blasfeo_dgemv_n(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
         }
-        
-        // Start recursion
-        for (i32 tau=t-1; tau>=0; --tau) {
-            rho = wrk->rho[tau];
-            u = Mu + tau*nu;
-            eta = Meta + wrk->crho[tau];
-            f64* Lu00 = wrk->Lu+tau*3*nu*nu;
-            f64* Lu01 = Lu00 + nu*nu;
-            f64* Lu11 = Lu01 + nu*rho;
-            f64* Ku = wrk->K+tau*2*nx*nu;
-            f64* Keta = Ku + nx*nu;
-            // Compute B' p
-            fma_mv_t(u, wrk->B+tau*nx*nu, tmp1, nu, nx, nu);
-            // Solve Lu [du; deta] = [B' p; 0]
-            LQRTRSV(u, eta, Lu00, Lu01, Lu11, nu, rho);
-            // p = A[tau]' p - Ku du + Keta deta
-            memset(tmp2, 0, nx*sizeof(f64));
-            fma_mv_t(tmp2, wrk->A+tau*nx*nx, tmp1, nx, nx, nx);
-            fms_mv(tmp2, Ku, u, nx, nu, nu);
-            fma_mv(tmp2, Keta, eta, nx, rho, rho);
-            swap(&tmp1, &tmp2);
-        }
+    }
+
+    for (; tau>=0; --tau) {
+        u32 rho = wrk->rho[tau];
+        f64* u = Mu + tau*nu;
+        f64* eta = Meta + wrk->crho[tau];
+        // Compute B' p
+        v0.pa = u; v1.pa = tmp1;
+        blasfeo_dgemv_n(nu, nx, 1.0, wrk->B+tau, 0, 0, &v1, 0, 0.0, &v0, 0, &v0, 0);
+        // Solve Lu [du; deta] = [B' p; 0]
+        blasfeo_dtrsv_lnn(nu+rho, wrk->Lu+tau, 0, 0, &v0, 0, &v0, 0);
+        // p = A[tau]' p - Ku du + Keta deta
+        v0.pa = tmp2; v1.pa = tmp1;
+        blasfeo_dgemv_n(nx, nx, 1.0, wrk->A+tau, 0, 0, &v1, 0, 0.0, &v0, 0, &v0, 0);
+        v1.pa = u;
+        blasfeo_dgemv_n(nx, nu, -1.0, wrk->Ku+tau, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v1.pa = eta;
+        blasfeo_dgemv_n(nx, rho, 1.0, wrk->Ke+tau, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        swap(&tmp1, &tmp2);
     }
 }
 
@@ -672,38 +657,51 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
     f64* u = wrk->u;
     f64* eta = wrk->eta;
     f64* x = wrk->x;
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
     memset(u, 0, N*nu*sizeof(f64));
     memset(eta, 0, wrk->neta*sizeof(f64));
-    memset(x+nx, 0, N*nx*sizeof(f64));
     // Get sqrt feedforwards (du, deta).
-    u32 nu_cols = (wrk->as.max_t+1)*nu;
+    u32 u_cols = (wrk->as.max_t+1)*nu;
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    fma_mv_t(u, wrk->Mu, wrk->xi, nu_cols, wrk->as.n_active, N*nu);
-    fma_mv_t(eta, wrk->Meta, wrk->xi, eta_cols, wrk->as.n_active, wrk->neta);
+    v0.pa = u;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Mu + i*N*nu;
+        blasfeo_daxpy(u_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
+    v0.pa = eta;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Meta + i*wrk->neta;
+        blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
     // Forward recursion.
-    negate(u, nu);
-    LQRTRSV_T(u, eta, wrk->Lu, wrk->Lu+nu*nu, wrk->Lu+nu*(nu+wrk->rho[0]), nu, wrk->rho[0]);
-    fma_mv(x+nx, wrk->B, u, nx, nu, nu);
+    v0.pa = u;
+    blasfeo_dvecsc(nu, -1.0, &v0, 0);
+    blasfeo_dtrsv_lnn(nu+wrk->rho[0], wrk->Lu, 0, 0, &v0, 0, &v0, 0);
+    v1.pa = x+nx;
+    blasfeo_dgemv_t(nx, nu, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0); 
     for (u32 t=1; t<N; ++t) {
         u32 rho = wrk->rho[t];
         f64* u = wrk->u+t*nu;
         f64* eta = wrk->eta+wrk->crho[t];
         f64* x = wrk->x+t*nx;
-        f64* Lu00 = wrk->Lu+t*3*nu*nu;
-        f64* Lu01 = Lu00 + nu*nu;
-        f64* Lu11 = Lu01 + nu*rho;
-        f64* Ku = wrk->K+2*t*nx*nu;
-        f64* Keta = Ku + nx*nu;
-        fma_mv_t(u, Ku, x, nu, nx, nu);
-        fma_mv_t(eta, Keta, x, rho, nx, rho);
-        negate(u, nu);
-        LQRTRSV_T(u, eta, Lu00, Lu01, Lu11, nu, rho);
-        fma_mv(x+nx, wrk->A+t*nx*nx, x, nx, nx, nx);
-        fma_mv(x+nx, wrk->B+t*nx*nu, u, nx, nu, nu);
+        v0.pa = u; v1.pa = x;
+        blasfeo_dgemv_t(nu, nx, -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
+        v0.pa = eta;
+        blasfeo_dgemv_t(rho, nx, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v0.pa = u;
+        blasfeo_dtrsv_ltn(nu+rho, wrk->Lu+t, 0, 0, &v0, 0, &v0, 0);
+        v1.pa = x+nx;
+        blasfeo_dgemv_t(nx, nu, 1.0, wrk->B+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        v0.pa = x;
+        blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
     }
-    add(u, wrk->u_lqr, N*nu);
-    add(eta, wrk->eta_lqr, wrk->neta);
-    add(x + nx, wrk->x_lqr + nx, N*nx);
+    v0.pa = u; v1.pa = wrk->u_lqr;
+    blasfeo_daxpy(N*nu, 1.0, &v1, 0, &v0, 0, &v0, 0); 
+    v0.pa = eta, v1.pa = wrk->eta_lqr;
+    blasfeo_daxpy(wrk->neta, 1.0, &v1, 0, &v0, 0, &v0, 0); 
+    v0.pa = x + nx; v1.pa = wrk->x_lqr + nx;
+    blasfeo_daxpy(N*nx, 1.0, &v1, 0, &v0, 0, &v0, 0); 
     get_Cu_Dx(wrk);
     get_violated_constraint(wrk, constr);
 }
@@ -773,21 +771,27 @@ void get_Cu_Dx(workspace* wrk) {
     f64* x = wrk->x;
     f64* Cu = wrk->Cu;
     f64* Dx = wrk->Dx;
-
-    // Set s to zero
-    memset(Cu, 0, get_ncu(wrk)*sizeof(f64));
-    memset(Dx, 0, get_ncx(wrk)*sizeof(f64));
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
 
     for (u32 t=0; t<N; ++t) {
         for (u32 i=0; i<mu[t]; ++i) {
             constraint_t constraint = {(i32)t, (i32)i, 0};
             if (is_active(wrk, &constraint)) Cu[cmu[t] + i] = wrk->c[cmu[t] + i];
-            else for (u32 j=0; j<nu; ++j) Cu[cmu[t] + i] += wrk->C[cmu[t]*nu + i*nu + j] * u[t*nu + j];
+            else {
+                v0.pa = wrk->C + cmu[t]*nu + i*nu;
+                v1.pa = u + t*nu;
+                Cu[cmu[t]+i] = blasfeo_ddot(nu, &v0, 0, &v1, 0);
+            }
         }
         for (u32 i=0; i<mx[t]; ++i) {
             constraint_t constraint = {(i32)t, (i32)i, 1};
             if (is_active(wrk, &constraint)) Dx[cmx[t] + i] = wrk->d[cmx[t] + i];
-            else for (u32 j=0; j<nx; ++j) Dx[cmx[t] + i] += wrk->D[cmx[t]*nx + i*nx + j] * x[t*nx+nx + j];
+            else {
+                v0.pa = wrk->D + cmx[t]*nx + i*nx;
+                v1.pa = x + t*nx + nx;
+                Dx[cmx[t]+i] = blasfeo_ddot(nu, &v0, 0, &v1, 0); 
+            }
         }
     }
 }
@@ -855,26 +859,13 @@ void workspace_init(
     /*
         Allocate statically sized memory
     */
-    u32 tmp_floats = MAX(nx * MAX(nx, nu), nx+nu+1);
-    u32 nfloats = 3*N*nx*nx + // A, P, Q
-                  4*N*nx*nu + // B, K, S
-                  5*N*nu*nu +   // Lu, R
-                  6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
-                  7*N*nu +     // u, eta, u_lqr, eta_lqr, r, r_wrk, b
-                  2*tmp_floats; // riccati_tmp1, riccati_tmp2
+    u32 nfloats = 6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
+                  7*N*nu;     // u, eta, u_lqr, eta_lqr, r, r_wrk, b
     wrk->smemory = malloc(
         nfloats*sizeof(f64) +
         10*N*sizeof(u32) // mx, cmx, mu, cmu, eqx, equ, ceqx, cequ, rho, crho
     );
     f64* mem = (f64*) wrk->smemory;
-    wrk->A = mem; mem+=N*nx*nx;
-    wrk->P = mem; mem+=N*nx*nx;
-    wrk->Q = mem; mem+=N*nx*nx;
-    wrk->B = mem; mem+=N*nx*nu;
-    wrk->K = mem; mem+=2*N*nx*nu;
-    wrk->S = mem; mem+=N*nx*nu;
-    wrk->Lu = mem; mem+=3*N*nu*nu;
-    wrk->R = mem; mem+=N*nu*nu;
     wrk->w = mem; mem+=N*nx;
     wrk->Pw = mem; mem+=N*nx;
     wrk->x = mem; mem+=N*nx+nx;
@@ -888,8 +879,6 @@ void workspace_init(
     wrk->r = mem; mem+=N*nu;
     wrk->r_wrk = mem; mem+=N*nu;
     wrk->b = mem; mem+=N*nu;
-    wrk->riccati_tmp1 = mem; mem+=tmp_floats;
-    wrk->riccati_tmp2 = mem; mem+=tmp_floats;
     unsigned char* vmem = (unsigned char*) mem; 
     wrk->mx = (u32*) vmem; vmem+=N*sizeof(u32);
     wrk->cmx = (u32*) vmem; vmem+=N*sizeof(u32);
@@ -912,12 +901,33 @@ void workspace_init(
     u32 ncu = get_ncu(wrk);
     u32 neqx = get_neqx(wrk);
     u32 nequ = get_nequ(wrk);
-    memcpy(wrk->A, A, N*nx*nx*sizeof(f64));
-    memcpy(wrk->B, B, N*nx*nu*sizeof(f64));
+    for (u32 t=0; t<N; ++t) {
+        // Store A'
+        blasfeo_allocate_dmat(nx, nx, wrk->A+t);
+        blasfeo_pack_dmat(nx, nx, A+t*nx*nx, nx, wrk->A+t, 0, 0);
+        // Store B'
+        blasfeo_allocate_dmat(nu, nx, wrk->B+t);
+        blasfeo_pack_dmat(nu, nx, B+t*nx*nu, nu, wrk->B+t, 0, 0);
+        
+        blasfeo_allocate_dmat(nx, nx, wrk->Q+t);
+        blasfeo_pack_tran_dmat(nx, nx, Q+t+nx*nx, nx, wrk->Q+t, 0, 0);
+        blasfeo_allocate_dmat(nu, nu, wrk->R+t);
+        blasfeo_pack_tran_dmat(nu, nu, R+t*nu*nu, nu, wrk->R+t, 0, 0);
+        // Store S'
+        blasfeo_allocate_dmat(nx, nu, wrk->S+t);
+        blasfeo_pack_dmat(nx, nu, S+t*nx*nu, nx, wrk->S+t, 0, 0);
+
+        blasfeo_allocate_dmat(2*nu, 2*nu, wrk->Lu+t);
+        blasfeo_allocate_dmat(nx, nu, wrk->Ku+t);
+        blasfeo_allocate_dmat(nx, nu, wrk->Ke+t);
+        blasfeo_allocate_dmat(nx, nx, wrk->P+t);
+    }
+    blasfeo_allocate_dmat(nx, MAX(nx, nu), wrk->riccati_tmp1);
+    blasfeo_allocate_dmat(nx, MAX(nx, nu), wrk->riccati_tmp2);
+    blasfeo_allocate_dmat(nx, MAX(nx, nu), wrk->riccati_tmp3);
+    blasfeo_allocate_dmat(nx, MAX(nx, nu), wrk->riccati_tmp4);
+    blasfeo_allocate_dmat(nx, MAX(nx, nu), wrk->riccati_tmp5);
     memcpy(wrk->w, w, N*nx*sizeof(f64));
-    memcpy(wrk->Q, Q, N*nx*nx*sizeof(f64));
-    memcpy(wrk->S, S, N*nu*nx*sizeof(f64));
-    memcpy(wrk->R, R, N*nu*nu*sizeof(f64));
     memcpy(wrk->q, q, N*nx*sizeof(f64));
     memcpy(wrk->r, r, N*nu*sizeof(f64));
     memcpy(wrk->D, D, ncx*nx*sizeof(f64));
@@ -1003,7 +1013,8 @@ void allocate_equalities_workspace(workspace* wrk, u32* eqx, u32* equ) {
 
     u32 nfloats = neqx*nx+nequ*nu + // Deq, Ceq
                 neqx+nequ +         // deq, ceq
-                (neqx+nequ)*(nx+1+nx+nu+1); // H, GEtmp, h
+                (neqx+nequ)*(nx+1+nx+nu+1) + // H, GEtmp, h
+                nx+nu+1; // last row of GEtmp 
     wrk->eq_memory = malloc(nfloats*sizeof(f64));
     f64* mem = (f64*) wrk->eq_memory;
     wrk->Deq = mem; mem+=neqx*nx;
@@ -1011,11 +1022,27 @@ void allocate_equalities_workspace(workspace* wrk, u32* eqx, u32* equ) {
     wrk->deq = mem; mem+=neqx;
     wrk->ceq = mem; mem+=nequ;
     wrk->H = mem; mem+=(neqx+nequ)*nx;
-    wrk->GEtmp = mem; mem+=(neqx+nequ)*(nx+nu+1);
+    wrk->GEtmp = mem; mem+=(neqx+nequ+1)*(nx+nu+1);
     wrk->h = mem; mem+=neqx+nequ;
 }
 
 void workspace_free(workspace* wrk) {
+    for (u32 t=0; t<wrk->N; ++t) {
+        blasfeo_free_dmat(wrk->A+t);
+        blasfeo_free_dmat(wrk->B+t);
+        blasfeo_free_dmat(wrk->Q+t);
+        blasfeo_free_dmat(wrk->S+t);
+        blasfeo_free_dmat(wrk->R+t);
+        blasfeo_free_dmat(wrk->P+t);
+        blasfeo_free_dmat(wrk->Lu+t);
+        blasfeo_free_dmat(wrk->Ku+t);
+        blasfeo_free_dmat(wrk->Ke+t);
+    }
+    blasfeo_free_dmat(wrk->riccati_tmp1);
+    blasfeo_free_dmat(wrk->riccati_tmp2);
+    blasfeo_free_dmat(wrk->riccati_tmp3);
+    blasfeo_free_dmat(wrk->riccati_tmp4);
+    blasfeo_free_dmat(wrk->riccati_tmp5);
     free(wrk->smemory);
     free(wrk->ineq_memory);
     free(wrk->eq_memory);
@@ -1029,42 +1056,41 @@ void solve_riccati(workspace* wrk) {
     u32* equ = wrk->equ;
     u32* ceqx = wrk->ceqx;
     u32* cequ = wrk->cequ;
-    f64* tmp1 = wrk->riccati_tmp1;
-    f64* tmp2 = wrk->riccati_tmp2;
+    struct blasfeo_dmat* tmp1 = wrk->riccati_tmp1;
+    struct blasfeo_dmat* tmp2 = wrk->riccati_tmp2;
+    struct blasfeo_dmat* Luu = wrk->riccati_tmp3;
+    struct blasfeo_dmat* Lue = wrk->riccati_tmp4;
+    struct blasfeo_dmat* Lee = wrk->riccati_tmp5;
     f64* GEtmp = wrk->GEtmp;
 
-    memcpy(wrk->P, wrk->Q, N*nx*nx*sizeof(f64));
     u32 neq_x0 = 0;
     for (i32 t=N-1; t>=0; t--) {
-        f64* Lu00 = wrk->Lu+t*3*nu*nu;
-        f64* Lu01 = Lu00+nu*nu;
-        
         // Compute Lu00 = chol(R + B'PB)
-        transpose(tmp2, wrk->B + t*nx*nu, nx, nu);
-        memset(tmp1, 0, nx*nu*sizeof(f64));
-        fma_mm_nt(tmp1, tmp2, wrk->P + t*nx*nx, nu, nx, nx, nx);
-        memcpy(Lu00, wrk->R+t*nu*nu, nu*nu*sizeof(f64));
-        syrk_nt_lo(Lu00, tmp2, tmp1, nu, nx, nu);
-        cholesky(Lu00, nu);
+        blasfeo_dgemm_nt(nu, nx, nx, 1.0, wrk->B+t, 0, 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
+        blasfeo_dsyrk_dpotrf_ln(nu, nx, tmp1, 0, 0, wrk->B+t, 0, 0, wrk->R+t, 0, 0, Luu, 0, 0); 
 
         /* 
             Gaussian elimination to propagate constraints
         */
         
         // Form [C; DB; HB | 0; DA; HA | c; d-Dw; h-Hw]
+        f64* A = Lue->dA;
+        f64* B = Lee->dA;
+        blasfeo_unpack_dmat(nx, nx, wrk->A+t, 0, 0, A, nx);
+        blasfeo_unpack_dmat(nx, nx, wrk->B+t, 0, 0, B, nu);
         memset(GEtmp, 0, (nx+nu+1)*(equ[t]+eqx[t]+neq_x0)*sizeof(f64));
         for (u32 i=0; i<equ[t]; ++i) memcpy(GEtmp+i*(nx+nu+1), wrk->Ceq+(cequ[t]+i)*nu, nu*sizeof(f64));
         for (u32 i=0; i<equ[t]; ++i) GEtmp[i*(nx+nu+1)+nx+nu] = wrk->ceq[cequ[t]+i];
-        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1), wrk->Deq+ceqx[t]*nx, wrk->B+t*nx*nu, eqx[t], nu, nx, nx+nu+1);
-        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1)+nu, wrk->Deq+ceqx[t]*nx, wrk->A+t*nx*nx, eqx[t], nx, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1), wrk->Deq+ceqx[t]*nx, B, eqx[t], nu, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+equ[t]*(nx+nu+1)+nu, wrk->Deq+ceqx[t]*nx, A, eqx[t], nx, nx, nx+nu+1);
         for (u32 i=0; i<eqx[t]; ++i) GEtmp[(equ[t]+i)*(nx+nu+1)+nx+nu] = wrk->deq[ceqx[t]+i];
         fms_mv(GEtmp+equ[t]*(nx+nu+1)+nx+nu, wrk->Deq+ceqx[t]*nx, wrk->w+t*nx, eqx[t], nx, nx+nu+1);
-        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1), wrk->H, wrk->B+t*nx*nu, neq_x0, nu, nx, nx+nu+1);
-        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nu, wrk->H, wrk->A+t*nx*nx, neq_x0, nx, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1), wrk->H, B, neq_x0, nu, nx, nx+nu+1);
+        fma_mm_nn(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nu, wrk->H, A, neq_x0, nx, nx, nx+nu+1);
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(eqx[t]+equ[t]+i)*(nx+nu+1)+nx+nu] = wrk->h[i];
         fms_mv(GEtmp+(equ[t]+eqx[t])*(nx+nu+1)+nx+nu, wrk->H, wrk->w+t*nx, neq_x0, nx, nx+nu+1);
         // Gaussian elimination
-        u32 rho = gaussian_elimination(GEtmp, wrk->riccati_tmp2,
+        u32 rho = gaussian_elimination(GEtmp, GEtmp + equ[t]+eqx[t]+neq_x0,
             equ[t]+eqx[t]+neq_x0, nu, nx+nu+1, nu);
         // Copy new H, h.
         for (u32 i=rho; i<equ[t]+eqx[t]+neq_x0; ++i) {
@@ -1079,40 +1105,35 @@ void solve_riccati(workspace* wrk) {
         /* 
             Complete LDL of KKT matrix [(R+B'PB) G'; G 0]
         */
-        for (u32 i=0; i<rho; ++i) 
-            memcpy(Lu01 + i*nu, GEtmp + i*(nx+nu+1), nu*sizeof(f64));
-        trsm_rt(Lu01, Lu00, nu, rho);
-        f64* Lu11 = Lu01+rho*nu;
-        memset(Lu11, 0, rho*rho*sizeof(f64));
-        syrk_nt_lo(Lu11, Lu01, Lu01, rho, nu, rho);
-        cholesky(Lu11, rho);
+        blasfeo_pack_tran_dmat(rho, nu, GEtmp, nx+nu+1, Lue, 0, 0);
+        blasfeo_dtrsm_rltn(rho, nu, 1.0, Luu, 0, 0, Lue, 0, 0, Lue, 0, 0);
+        memset(Lee->dA, 0, rho*rho*sizeof(f64));
+        blasfeo_dsyrk_dpotrf_ln(rho, nu, Lue, 0, 0, Lue, 0, 0, Lee, 0, 0, Lee, 0, 0);
+        blasfeo_dgecp(nu, nu, Luu, 0, 0, wrk->Lu+t, 0, 0);
+        blasfeo_dgecp(rho, nu, Lue, 0, 0, wrk->Lu+t, nu, 0);
+        blasfeo_dgecp(rho, rho, Lee, 0, 0, wrk->Lu+t, nu, nu);
 
         /*
             Compute partial feedback gains.
         */
-        f64* K0 = wrk->K+t*2*nx*nu;
-        f64* K1 = wrk->K+t*2*nx*nu + nx*nu;
 
         // Compute K0 = (A'PB + S')Lu00^{-T}
-        transpose(tmp2, wrk->A + t*nx*nx, nx, nx);
-        transpose(K0, wrk->S+t*nx*nu, nu, nx);
-        fma_mm_nt(K0, tmp2, tmp1, nx, nu, nx, nu);
-        trsm_rt(K0, Lu00, nu, nx);
+        blasfeo_dgemm_nt(nx, nu, nx, 1.0, wrk->A+t, 0, 0, tmp1, 0, 0, 1.0, wrk->S+t, 0, 0, wrk->Ku+t, 0, 0);
+        blasfeo_dtrsm_rltn(nx, nu, 1.0, Luu, 0, 0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0);
         // Compute K1 = (M' - K0 Lu01')Lu11^{-T}
-        for (u32 i=0; i<rho; ++i)
-            for (u32 j=0; j<nx; ++j) K1[j*rho+i] = GEtmp[i*(nx+nu+1)+nu+j];
-        fms_mm_nt(K1, K0, Lu01, nx, rho, nu, rho);
-        trsm_rt(K1, Lu11, rho, nx);
+        blasfeo_pack_tran_dmat(nx, rho, GEtmp+nu, nx+nu+1, wrk->Ke+t, 0, 0);
+        blasfeo_dgemm_nt(nx, rho, nu, -1.0, wrk->Ku+t, 0, 0, Lue, 0, 0, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
+        blasfeo_dtrsm_rltn(nx, rho, 1.0, Lee, 0, 0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
 
         if (t==0) break;
         /*
             Update P = Q + A'PA - Ku Ku' + Keta Keta'
         */
-        memset(tmp1, 0, nx*nx*sizeof(f64));
-        fma_mm_nt(tmp1, tmp2, wrk->P+t*nx*nx, nx, nx, nx, nx);
-        syrk_nt_lo(wrk->P+(t-1)*nx*nx, tmp1, tmp2, nx, nx, nx);
-        nsyrk_nt(wrk->P+(t-1)*nx*nx, K0, K0, nx, nu, nx);
-        syrk_nt(wrk->P+(t-1)*nx*nx, K1, K1, nx, rho, nx);
+        blasfeo_dgemm_nt(nx, nx, nx, 1.0, wrk->A+t, 0, 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
+        blasfeo_dsyrk_lt(nx, nx, 1.0, tmp1, 0, 0, wrk->A+t, 0, 0, 1.0, wrk->Q+t-1, 0, 0, wrk->P+t-1, 0, 0);
+        blasfeo_dsyrk_lt(nx, nu, -1.0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
+        blasfeo_dsyrk_lt(nx, rho, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
+        blasfeo_dtrtr_l(nx, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
     }
     // Set number of affine constraints on x0.
     wrk->neq_x0 = neq_x0;
@@ -1125,11 +1146,12 @@ void solve_lqr(workspace* wrk) {
     u32 N = wrk->N;
     u32 nu = wrk->nu;
     u32 nx = wrk->nx;
-    f64* tmp1 = wrk->riccati_tmp1;
-    f64* tmp2 = wrk->riccati_tmp2;
+    f64* tmp1 = wrk->riccati_tmp1->dA;
+    f64* tmp2 = wrk->riccati_tmp2->dA;
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    struct blasfeo_dvec v2;
 
-    // Initialize state
-    memcpy(wrk->x_lqr+nx, wrk->w, N*nx*sizeof(f64));
     // Initialize costate
     memcpy(tmp1, wrk->q + (N-1)*nx, nx*sizeof(f64)); 
     memset(wrk->Cu_lqr, 0, get_ncu(wrk)*sizeof(f64));
@@ -1143,25 +1165,24 @@ void solve_lqr(workspace* wrk) {
         u32 rho = wrk->rho[t];
         f64* du = wrk->u_lqr + t*nu;
         f64* deta = wrk->eta_lqr + wrk->crho[t];
-        f64* Lu00 = wrk->Lu + 3*t*nu*nu;
-        f64* Lu01 = Lu00 + nu*nu;
-        f64* Lu11 = Lu01 + nu*rho;
-        f64* Ku = wrk->K+2*t*nx*nu;
-        f64* Keta = Ku+nx*nu;
-        memcpy(du, wrk->r+t*nu, nu*sizeof(f64));
-        fma_mv(tmp1, wrk->P+t*nx*nx, wrk->w+t*nx, nx, nx, nx);
-        fma_mv_t(du, wrk->B+t*nu*nx, tmp1, nu, nx, nu);
+        
+        v0.pa = tmp1; v1.pa = wrk->w+t*nx;
+        blasfeo_dsymv_l(nx, 1.0, wrk->P+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v1.pa = du; v2.pa = wrk->r+t*nu;
+        blasfeo_dgemv_n(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v2, 0, &v1, 0);
         memcpy(deta, wrk->b+t*nu, rho*sizeof(f64));
-        LQRTRSV(du, deta, Lu00, Lu01, Lu11, nu, rho);
+        blasfeo_dtrsv_lnn(nu+rho, wrk->Lu+t, 0, 0, &v1, 0, &v1, 0);
 
         if (t==0) break;
         /*
             Compute p = A' (p + Pw) - Ku du + Keta deta + q 
         */
-        memcpy(tmp2, wrk->q+(t-1)*nx, nx*sizeof(f64));
-        fma_mv_t(tmp2, wrk->A+t*nx*nx, tmp1, nx, nx, nx);
-        fms_mv(tmp2, Ku, du, nx, nu, nu);
-        fma_mv(tmp2, Keta, deta, nx, rho, rho);
+        v2.pa = tmp2; v1.pa = wrk->q+(t-1)*nx;
+        blasfeo_dgemv_n(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v2, 0);
+        v1.pa = du;
+        blasfeo_dgemv_n(nx, nu, -1.0, wrk->Ku+t, 0, 0, &v1, 0, 1.9, &v2, 0, &v2, 0);
+        v1.pa = deta;
+        blasfeo_dgemv_n(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v2, 0, &v2, 0);
         swap(&tmp1, &tmp2);
     }
 
@@ -1171,24 +1192,24 @@ void solve_lqr(workspace* wrk) {
         f64* u = wrk->u_lqr+t*nu;
         f64* eta = wrk->eta_lqr+wrk->crho[t];
         f64* x = wrk->x_lqr+t*nx;
-        f64* Lu00 = wrk->Lu+3*t*nu*nu;
-        f64* Lu01 = Lu00+nu*nu;
-        f64* Lu11 = Lu01+nu*rho;
-        f64* Ku = wrk->K+2*t*nx*nu;
-        f64* Keta = Ku + nx*nu;
         /*
             u = Lu^{-T}\Simga[-Ku' x - du; Keta' x0 + deta]
         */
-        fma_mv_t(u, Ku, x, nu, nx, nu);
-        negate(u, nu);
-        fma_mv_t(eta, Keta, x, rho, nx, rho);
-        LQRTRSV_T(u, eta, Lu00, Lu01, Lu11, nu, rho);
+        v0.pa = u; v1.pa = x;
+        blasfeo_dgemv_t(nu, nx, 1.0, wrk->Ku+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        blasfeo_dvecsc(nu, -1.0, &v0, 0);
+        v0.pa = eta;
+        blasfeo_dgemv_t(rho, nx, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v0.pa = u;
+        blasfeo_dtrsv_ltn(nu+rho, wrk->Lu+t, 0, 0, &v0, 0, &v0, 0);
         
         /*
             x = Ax + Bu + w
         */
-        fma_mv(x+nx, wrk->A+t*nx*nx, x, nx, nx, nx);
-        fma_mv(x+nx, wrk->B+t*nx*nu, u, nx, nu, nu);
+        v1.pa = x+nx; v2.pa = wrk->w+t*nx;
+        blasfeo_dgemv_t(nx, nu, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v2, 0, &v1, 0);
+        v2.pa = x;
+        blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v2, 0, 1.0, &v1, 0, &v1, 0);
         
         /*
             Cu, Dx
@@ -1207,13 +1228,21 @@ u32 eqcon_infeasible(workspace* wrk) {
 }
 
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
-    for (u32 i=0; i<ny; ++i)
-        for (u32 j=0; j<nx; ++j) y[i] += A[i*stride + j] * x[j];
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1; v1.pa = x;
+    for (u32 i=0; i<ny; ++i) {
+        v0.pa = A + i*stride;
+        y[i] += blasfeo_ddot(nx, &v0, 0, &v1, 0);
+    }
 }
 
 void fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
-    for (u32 i=0; i<ny; ++i)
-        for (u32 j=0; j<nx; ++j) y[i] -= A[i*stride + j] * x[j];
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1; v1.pa = x;
+    for (u32 i=0; i<ny; ++i) {
+        v0.pa = A + i*stride;
+        y[i] -= blasfeo_ddot(nx, &v0, 0, &v1, 0);
+    }
 }
 
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
@@ -1246,17 +1275,23 @@ void transpose(f64* dst, f64* src, u32 nrs, u32 ncs) {
 }
 
 void fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
     for (u32 i=0; i<nr; ++i)
-        for (u32 j=0; j<nc; ++j)
-            for (u32 l=0; l<k; ++l) 
-                C[i*ostride + j] += A[i*k + l] * B[j*k + l];
+        for (u32 j=0; j<nc; ++j) {
+            v0.pa = A + i*k; v1.pa = B + j*k;
+            C[i*ostride + j] += blasfeo_ddot(k, &v0, 0, &v1, 0);
+        }
 }
 
 void fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
     for (u32 i=0; i<nr; ++i)
-        for (u32 j=0; j<nc; ++j)
-            for (u32 l=0; l<k; ++l) 
-                C[i*ostride + j] -= A[i*k + l] * B[j*k + l];
+        for (u32 j=0; j<nc; ++j) {
+            v0.pa = A + i*k; v1.pa = B + j*k;
+            C[i*ostride + j] -= blasfeo_ddot(k, &v0, 0, &v1, 0);
+        }
 }
 
 void fma_mm_nn(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
