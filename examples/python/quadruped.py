@@ -65,4 +65,4 @@ def time_ocp():
     print(f"Average solve time: {(total/nreps):3f} us.")
 
 if __name__ == '__main__':
-    time_ocp()
+    solve_ocp()
