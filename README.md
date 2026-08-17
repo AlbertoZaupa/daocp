@@ -2,7 +2,7 @@
 
 This repository implements a dual active-set solver for Quadratic Programs (QPs) with Optimal Control structure:
 
-$$
+```math
 \begin{aligned}
 \underset{x, u}{\min} \quad
 & \frac{1}{2} x_N^{\top} Q_N x_N + q_N^{\top} x_N \\
@@ -20,7 +20,7 @@ $$
   \quad t = 0, \ldots, N-1, \\
 & x_0 \text{ given.}
 \end{aligned}
-$$
+```
 
 The solver is implemented entirely in `src.c`, and it relies on the linear algebra backend `blasfeo`.
 
