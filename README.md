@@ -4,7 +4,7 @@ This repository implements a dual active-set solver for Quadratic Programs (QPs)
 
 $$
 \begin{aligned}
-\underset{x, u}{\operatorname{minimize}} \quad
+\underset{x, u}{\min} \quad
 & \frac{1}{2} x_N^{\top} Q_N x_N + q_N^{\top} x_N \\
 & \quad + \sum_{t=0}^{N-1} \left(
     \frac{1}{2}
