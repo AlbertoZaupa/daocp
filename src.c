@@ -139,7 +139,9 @@ u32 get_L_from_scratch(workspace* wrk);
 void get_b(workspace* wrk);
 void reset_working_set(workspace* wrk);
 u32 is_dual_feasible(f64* p, u32 n);
-void compute_slacks(workspace* wrk, constraint_t* constr);
+void check_primal_feasibility(workspace* wrk, constraint_t* constr);
+void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr);
+void compute_du_deta(workspace* wrk);
 void get_violated_constraint(workspace* wrk, constraint_t* constr);
 u32 check_infeasibility(f64* p, u32 n);
 void get_Cu_Dx(workspace* wrk);
@@ -165,6 +167,7 @@ void workspace_free(workspace* wrk);
 void solve_riccati(workspace* wrk);
 void solve_lqr(workspace* wrk);
 u32 eqcon_infeasible(workspace* wrk);
+void add_lqrsol(workspace* wrk);
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void fma_mv_t(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
@@ -185,25 +188,17 @@ void negate(f64* v, u32 n);
 void add(f64* v, f64* w, u32 n);
 f64 dot(f64* v, f64* w, u32 n);
 void swap(f64** a, f64** b);
-#define LQRTRSV(u, eta, Lu00, Lu01, Lu11, nu, rho)  { \
-    trsv(u, Lu00, nu, nu);                            \
-    fms_mv(eta, Lu01, u, rho, nu, nu);                \
-    trsv(eta, Lu11, rho, rho);                        \
-}
-#define LQRTRSV_T(u, eta, Lu00, Lu01, Lu11, nu, rho) { \
-    trsv_t(eta, Lu11, rho, rho);                       \
-    fms_mv_t(u, Lu01, eta, nu, rho, nu);               \
-    trsv_t(u, Lu00, nu, nu);                           \
-}
 
 u32 solve(workspace* wrk) {
     constraint_t constr;
     i32 removed_constr;
+    u32 iters = wrk->max_iter;
 
     // Check feasibility on x0
     if (eqcon_infeasible(wrk)) {
         wrk->return_status = INFEASIBLE;
-        return 0;
+        iters = 0;
+        goto solve_ret;
     }
 
     for (u32 k=0; k<wrk->max_iter; ++k) {
@@ -211,10 +206,11 @@ u32 solve(workspace* wrk) {
             solve_dual_qp(wrk);
             if (is_dual_feasible(wrk->p, wrk->as.n_active)) {
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
-                compute_slacks(wrk, &constr);
+                check_primal_feasibility(wrk, &constr);
                 if (constr.t < 0) {
                     wrk->return_status = SOLVED;
-                    return k;
+                    iters = k;
+                    goto solve_ret;
                 }
                 add_constraint(wrk, &constr); 
             } else {
@@ -226,19 +222,24 @@ u32 solve(workspace* wrk) {
         } else {
             if (get_descent_dir(wrk)) {
                 wrk->return_status = ILL_CONDITIONED;
-                return k;
+                iters = k;
+                goto solve_ret;
             }
             if (check_infeasibility(wrk->p, wrk->as.n_active)) {
                 wrk->return_status = INFEASIBLE;
-                return k;
+                iters = k;
+                goto solve_ret;
             }
             removed_constr = drop_component(wrk->xi, wrk->p, wrk->as.n_active);
             remove_constraint(wrk, removed_constr);
         }
     }
-    
     wrk->return_status = MAX_ITER;
-    return wrk->max_iter;
+
+solve_ret:
+    // Add unconstrained minimizer
+    add_lqrsol(wrk); 
+    return iters;
 }
 
 void update_problem_data(
@@ -664,7 +665,7 @@ u32 is_dual_feasible(f64* p, u32 n) {
     return 1;
 }
 
-void compute_slacks(workspace* wrk, constraint_t* constr) {
+void check_primal_feasibility(workspace* wrk, constraint_t* constr) {
     /*
         Computes argmin L(x, u, \lambda, \mu) and correspnding constraint slacks.
     */
@@ -677,21 +678,10 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
     f64* x = wrk->x;
     struct blasfeo_dvec v0;
     struct blasfeo_dvec v1;
-    memset(u, 0, N*nu*sizeof(f64));
-    memset(eta, 0, wrk->neta*sizeof(f64));
-    // Get sqrt feedforwards (du, deta).
-    u32 u_cols = (wrk->as.max_t+1)*nu;
-    u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    v0.pa = u;
-    for (u32 i=0; i<wrk->as.n_active; ++i) {
-        v1.pa = wrk->Mu + i*N*nu;
-        blasfeo_daxpy(u_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
-    }
-    v0.pa = eta;
-    for (u32 i=0; i<wrk->as.n_active; ++i) {
-        v1.pa = wrk->Meta + i*wrk->neta;
-        blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
-    }
+    
+    // Compute (du, deta) feedforwards.
+    compute_du_deta(wrk);
+    
     // Forward recursion.
     v0.pa = u; v1.pa = eta;
     blasfeo_dvecsc(nu, -1.0, &v0, 0);
@@ -714,14 +704,104 @@ void compute_slacks(workspace* wrk, constraint_t* constr) {
         v0.pa = x;
         blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
     }
-    v0.pa = u; v1.pa = wrk->u_lqr;
-    blasfeo_daxpy(N*nu, 1.0, &v1, 0, &v0, 0, &v0, 0); 
-    v0.pa = eta, v1.pa = wrk->eta_lqr;
-    blasfeo_daxpy(wrk->neta, 1.0, &v1, 0, &v0, 0, &v0, 0); 
-    v0.pa = x + nx; v1.pa = wrk->x_lqr + nx;
-    blasfeo_daxpy(N*nx, 1.0, &v1, 0, &v0, 0, &v0, 0); 
+
+    // Compute constraint image and get most violated constraint
     get_Cu_Dx(wrk);
     get_violated_constraint(wrk, constr);
+}
+
+void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
+    u32 N = wrk->N;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+
+    // Compute feedforward terms
+    compute_du_deta(wrk);
+
+    // Run forward recursion and stop as soon as a violated constraint
+    // is detected.
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    constr->t = -1;
+    for (u32 t=0; t<N; ++t) {
+        u32 rho = wrk->rho[t];
+        f64* u = wrk->u+t*nu;
+        f64* eta = wrk->eta+wrk->crho[t];
+        f64* x = wrk->x+t*nx;
+        
+        // Compute control
+        v0.pa = u; v1.pa = eta;
+        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
+
+        // Check control constraints
+        u32 mu = wrk->mu[t];
+        u32 cmu = wrk->cmu[t];
+        for (u32 i=0; i<mu; ++i) {
+            constraint_t constraint = {(i32) t, (i32) i, 0}; 
+            if (!is_active(wrk, &constraint)) {
+                v0.pa = wrk->C+cmu*nu+i*nu;
+                v1.pa = u;
+                wrk->Cu[cmu+i] = wrk->Cu_lqr[cmu+i] + blasfeo_ddot(nu, &v0, 0, &v1, 0);
+                if (wrk->Cu[cmu+i] - wrk->c[cmu+i] > ZERO_TOL) {
+                    constr->t = t;
+                    constr->idx = i;
+                    constr->is_state = 0;
+                    goto greedy_end;
+                }
+            }
+        }
+
+        // Propagate state dynamics
+        v0.pa = x; v1.pa = x+nx;
+        blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        v0.pa = u;
+        blasfeo_dgemv_t(nx, nu, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+
+        // Check state constraints
+        u32 mx = wrk->mx[t];
+        u32 cmx = wrk->cmx[t];
+        for (u32 i=0; i<mx; ++i) {
+            constraint_t constraint = {(i32) t, (i32) i, 1}; 
+            if (!is_active(wrk, &constraint)) {
+                v0.pa = wrk->D+cmx*nx+i*nx;
+                v1.pa = x+nx;
+                wrk->Dx[cmx+i] = wrk->Dx_lqr[cmx+i] + blasfeo_ddot(nx, &v0, 0, &v1, 0);
+                if (wrk->Dx[cmx+i] - wrk->d[cmx+i] > ZERO_TOL) {
+                    constr->t = t;
+                    constr->idx = i;
+                    constr->is_state = 1;
+                    goto greedy_end;
+                }
+            }
+        }
+    }
+
+greedy_end:
+    return;
+}
+
+void compute_du_deta(workspace* wrk) {
+    u32 N = wrk->N;
+    u32 nu = wrk->nu;
+    f64* u = wrk->u;
+    f64* eta = wrk->eta;
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    memset(u, 0, N*nu*sizeof(f64));
+    memset(eta, 0, wrk->neta*sizeof(f64));
+    // Get sqrt feedforwards (du, deta).
+    u32 u_cols = (wrk->as.max_t+1)*nu;
+    u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
+    v0.pa = u;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Mu + i*N*nu;
+        blasfeo_daxpy(u_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
+    v0.pa = eta;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Meta + i*wrk->neta;
+        blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
 }
 
 void get_violated_constraint(workspace* wrk, constraint_t* constr) {
@@ -795,8 +875,7 @@ void get_Cu_Dx(workspace* wrk) {
     for (u32 t=0; t<N; ++t) {
         for (u32 i=0; i<mu[t]; ++i) {
             constraint_t constraint = {(i32)t, (i32)i, 0};
-            if (is_active(wrk, &constraint)) Cu[cmu[t] + i] = wrk->c[cmu[t] + i];
-            else {
+            if (!is_active(wrk, &constraint)) {
                 v0.pa = wrk->C + cmu[t]*nu + i*nu;
                 v1.pa = u + t*nu;
                 Cu[cmu[t]+i] = blasfeo_ddot(nu, &v0, 0, &v1, 0);
@@ -804,8 +883,7 @@ void get_Cu_Dx(workspace* wrk) {
         }
         for (u32 i=0; i<mx[t]; ++i) {
             constraint_t constraint = {(i32)t, (i32)i, 1};
-            if (is_active(wrk, &constraint)) Dx[cmx[t] + i] = wrk->d[cmx[t] + i];
-            else {
+            if (!is_active(wrk, &constraint))  {
                 v0.pa = wrk->D + cmx[t]*nx + i*nx;
                 v1.pa = x + t*nx + nx;
                 Dx[cmx[t]+i] = blasfeo_ddot(nx, &v0, 0, &v1, 0); 
@@ -1254,6 +1332,21 @@ u32 eqcon_infeasible(workspace* wrk) {
     for (u32 i=0; i<wrk->neq_x0; ++i)
         if (ABS(wrk->GEtmp[i] - wrk->h[i]) > ZERO_TOL) return 1;
     return 0;
+}
+
+void add_lqrsol(workspace* wrk) {
+    // Add unconstrained minimizer.
+    u32 N = wrk->N;
+    u32 nu = wrk->nu;
+    u32 nx = wrk->nx;
+    struct blasfeo_dvec v0, v1;
+
+    v0.pa = wrk->u; v1.pa = wrk->u_lqr;
+    blasfeo_daxpy(N*nu, 1.0, &v1, 0, &v0, 0, &v0, 0); 
+    v0.pa = wrk->eta, v1.pa = wrk->eta_lqr;
+    blasfeo_daxpy(wrk->neta, 1.0, &v1, 0, &v0, 0, &v0, 0); 
+    v0.pa = wrk->x + nx; v1.pa = wrk->x_lqr + nx;
+    blasfeo_daxpy(N*nx, 1.0, &v1, 0, &v0, 0, &v0, 0); 
 }
 
 void fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
