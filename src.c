@@ -43,6 +43,7 @@ typedef struct {
 
 typedef struct {
     active_set as;
+    void (*constraint_selection_rule)(workspace*, constraint_t*);
     void* smemory;
     void* ineq_memory;
     void* eq_memory;
@@ -139,10 +140,11 @@ u32 get_L_from_scratch(workspace* wrk);
 void get_b(workspace* wrk);
 void reset_working_set(workspace* wrk);
 u32 is_dual_feasible(f64* p, u32 n);
-void check_primal_feasibility(workspace* wrk, constraint_t* constr);
+void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr);
 void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr);
 void compute_du_deta(workspace* wrk);
-void get_violated_constraint(workspace* wrk, constraint_t* constr);
+u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr);
+void get_most_violated(workspace* wrk, constraint_t* constr);
 u32 check_infeasibility(f64* p, u32 n);
 void get_Cu_Dx(workspace* wrk);
 u32 is_active(workspace* wrk, constraint_t* constr);
@@ -160,7 +162,8 @@ void workspace_init(
     f64* d, f64* c, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
-    u32* eqx, u32* equ, u32 max_iter);
+    u32* eqx, u32* equ, u32 max_iter,
+    u32 greedy);
 void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu);
 void allocate_equalities_workspace(workspace* wrk, u32* eqx, u32* equ);
 void workspace_free(workspace* wrk);
@@ -206,7 +209,7 @@ u32 solve(workspace* wrk) {
             solve_dual_qp(wrk);
             if (is_dual_feasible(wrk->p, wrk->as.n_active)) {
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
-                check_primal_feasibility(wrk, &constr);
+                wrk->constraint_selection_rule(wrk, &constr);
                 if (constr.t < 0) {
                     wrk->return_status = SOLVED;
                     iters = k;
@@ -665,7 +668,7 @@ u32 is_dual_feasible(f64* p, u32 n) {
     return 1;
 }
 
-void check_primal_feasibility(workspace* wrk, constraint_t* constr) {
+void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr) {
     /*
         Computes argmin L(x, u, \lambda, \mu) and correspnding constraint slacks.
     */
@@ -707,7 +710,7 @@ void check_primal_feasibility(workspace* wrk, constraint_t* constr) {
 
     // Compute constraint image and get most violated constraint
     get_Cu_Dx(wrk);
-    get_violated_constraint(wrk, constr);
+    get_most_violated(wrk, constr);
 }
 
 void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
@@ -723,33 +726,32 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
     struct blasfeo_dvec v0;
     struct blasfeo_dvec v1;
     constr->t = -1;
-    for (u32 t=0; t<N; ++t) {
+
+    // First iteration (x0 = 0)
+    v0.pa = wrk->u; v1.pa = wrk->eta;
+    blasfeo_dvecsc(nu, -1.0, &v0, 0);
+    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
+    if (check_constraints(wrk, 0, 0, constr)) return;
+    v1.pa = wrk->x+nx;
+    blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+    if (check_constraints(wrk, 0, 1, constr)) return;
+
+    for (u32 t=1; t<N; ++t) {
         u32 rho = wrk->rho[t];
         f64* u = wrk->u+t*nu;
         f64* eta = wrk->eta+wrk->crho[t];
         f64* x = wrk->x+t*nx;
         
         // Compute control
+        v0.pa = u; v1.pa = x;
+        blasfeo_dgemv_t(nx, nu, -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
+        v0.pa = eta;
+        blasfeo_dgemv_t(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u; v1.pa = eta;
         TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
 
         // Check control constraints
-        u32 mu = wrk->mu[t];
-        u32 cmu = wrk->cmu[t];
-        for (u32 i=0; i<mu; ++i) {
-            constraint_t constraint = {(i32) t, (i32) i, 0}; 
-            if (!is_active(wrk, &constraint)) {
-                v0.pa = wrk->C+cmu*nu+i*nu;
-                v1.pa = u;
-                wrk->Cu[cmu+i] = wrk->Cu_lqr[cmu+i] + blasfeo_ddot(nu, &v0, 0, &v1, 0);
-                if (wrk->Cu[cmu+i] - wrk->c[cmu+i] > ZERO_TOL) {
-                    constr->t = t;
-                    constr->idx = i;
-                    constr->is_state = 0;
-                    goto greedy_end;
-                }
-            }
-        }
+        if (check_constraints(wrk, t, 0, constr)) return; 
 
         // Propagate state dynamics
         v0.pa = x; v1.pa = x+nx;
@@ -758,26 +760,8 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
         blasfeo_dgemv_t(nx, nu, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state constraints
-        u32 mx = wrk->mx[t];
-        u32 cmx = wrk->cmx[t];
-        for (u32 i=0; i<mx; ++i) {
-            constraint_t constraint = {(i32) t, (i32) i, 1}; 
-            if (!is_active(wrk, &constraint)) {
-                v0.pa = wrk->D+cmx*nx+i*nx;
-                v1.pa = x+nx;
-                wrk->Dx[cmx+i] = wrk->Dx_lqr[cmx+i] + blasfeo_ddot(nx, &v0, 0, &v1, 0);
-                if (wrk->Dx[cmx+i] - wrk->d[cmx+i] > ZERO_TOL) {
-                    constr->t = t;
-                    constr->idx = i;
-                    constr->is_state = 1;
-                    goto greedy_end;
-                }
-            }
-        }
+        if (check_constraints(wrk, t, 1, constr)) return;
     }
-
-greedy_end:
-    return;
 }
 
 void compute_du_deta(workspace* wrk) {
@@ -804,7 +788,49 @@ void compute_du_deta(workspace* wrk) {
     }
 }
 
-void get_violated_constraint(workspace* wrk, constraint_t* constr) {
+u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr) {
+    u32 m, cm, n;
+    f64 *xu, *CD, *cd, *CuDx, *CuDx_lqr;
+    if (is_state) {
+        m = wrk->mx[t];
+        cm = wrk->cmx[t];
+        n = wrk->nx;
+        xu = wrk->x+t*n+n;
+        CuDx = wrk->Dx + cm;
+        CuDx_lqr = wrk->Dx_lqr + cm;
+        CD = wrk->D+cm*n;
+        cd = wrk->d + cm;
+    } else {
+        m = wrk->mu[t];
+        cm = wrk->cmu[t];
+        n = wrk->nu;
+        xu = wrk->u+t*n;
+        CuDx = wrk->Cu+cm;
+        CuDx_lqr = wrk->Cu_lqr+cm;
+        CD = wrk->C+cm*n;
+        cd = wrk->c+cm;
+    }
+    struct blasfeo_dvec v0, v1;
+    v0.pa = xu;
+
+    for (u32 i=0; i<m; ++i) {
+        constraint_t tmp = (constraint_t) {(i32) t, (i32) i, is_state};
+        if (!is_active(wrk, &tmp)) {
+            v1.pa = CD+i*n;
+            CuDx[i] = CuDx_lqr[i] + blasfeo_ddot(n, &v0, 0, &v1, 0);
+            if (CuDx[i] - cd[i] > ZERO_TOL) {
+                constr->t = t;
+                constr->idx = i;
+                constr->is_state = is_state;
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
+void get_most_violated(workspace* wrk, constraint_t* constr) {
     // Return most violated constraint
     i32 tu = -1;
     i32 tx = -1;
@@ -818,7 +844,9 @@ void get_violated_constraint(workspace* wrk, constraint_t* constr) {
     */
     for (u32 tau=0; tau<wrk->N; ++tau)
         for (u32 i=0; i<wrk->mu[tau]; ++i) {
-            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] - wrk->c[wrk->cmu[tau] + i];
+            constraint_t tmpcon = (constraint_t) {(i32) tau, (i32) i, 0};
+            if (is_active(wrk, &tmpcon)) continue;
+            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->c[wrk->cmu[tau] + i];
             if (tmp > ZERO_TOL && tmp > maxu) {
                 maxu = tmp;
                 idxu = i;
@@ -831,7 +859,9 @@ void get_violated_constraint(workspace* wrk, constraint_t* constr) {
     */
     for (u32 tau=0; tau<wrk->N; ++tau)
         for (u32 i=0; i<wrk->mx[tau]; ++i) {
-            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] - wrk->d[wrk->cmx[tau] + i];
+            constraint_t tmpcon = (constraint_t){(i32) tau, (i32) i, 1};
+            if (is_active(wrk, &tmpcon)) continue;
+            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->d[wrk->cmx[tau] + i];
             if (tmp > ZERO_TOL && tmp > maxx) {
                 maxx = tmp;
                 idxx = i;
@@ -944,13 +974,16 @@ void workspace_init(
     f64* d, f64* c, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
-    u32* eqx, u32* equ, u32 max_iter)
+    u32* eqx, u32* equ, u32 max_iter,
+    u32 greedy)
 {   
     wrk->N = N;
     wrk->nx = nx;
     wrk->nu = nu;
     wrk->dH_singular = 0;
     wrk->max_iter = max_iter;
+    wrk->constraint_selection_rule = greedy ? check_primal_feasibility_greedy : 
+                                        check_primal_feasibility_most_violated;
 
     /*
         Allocate statically sized memory
