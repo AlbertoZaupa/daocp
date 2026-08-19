@@ -31,6 +31,7 @@ typedef struct {
     i32 t;
     i32 idx;
     u32 is_state;
+    u32 is_upper;
 } constraint_t;
 
 typedef struct workspace workspace;
@@ -50,13 +51,14 @@ struct workspace {
     void* ineq_memory;
     void* eq_memory;
     f64* xi;
+    u32* xi_sign;
     f64* x;
     f64* u;
     f64* eta;
     f64* Dx;
     f64* Cu;
     f64* p;
-    f64* dl;
+    f64* dual_linear;
     f64* r_wrk;
     f64* q_wrk;
     f64* Mu;
@@ -66,8 +68,10 @@ struct workspace {
     f64* q;
     f64* C;
     f64* D;
-    f64* c;
-    f64* d;
+    f64* cl;
+    f64* cu;
+    f64* dl;
+    f64* du;
     f64* Ceq;
     f64* Deq;
     f64* ceq;
@@ -120,16 +124,9 @@ struct workspace {
 };
 
 u32 solve(workspace* wrk);
-void update_problem_data(
-    workspace* wrk, f64* x0, f64* q, f64* r, 
-    f64* A, f64* B, f64* w, f64* Q, f64* R, 
-    f64* S, u32* mx, u32* mu, f64* D, 
-    f64* C, f64* d, f64* c, u32* eqx,
-    u32* equ, f64* Deq, f64* Ceq, 
-    f64* deq, f64* ceq) ;
 void solve_dual_qp(workspace* wrk);
 u32 get_descent_dir(workspace* wrk);
-u32 drop_component(f64* xi, f64* p, u32 n);
+u32 drop_component(f64* xi, u32* xi_sign, f64* p, u32 n);
 void add_constraint(workspace* wrk, constraint_t* constr);
 void remove_constraint(workspace* wrk, u32 idx);
 void update_working_set_add(workspace* wrk, constraint_t* constr);
@@ -139,15 +136,15 @@ void get_dH_row(workspace* wrk, constraint_t* constr);
 void update_dH_chol_add(workspace* wrk);
 void update_dH_chol_remove(workspace* wrk, u32 idx);
 u32 get_L_from_scratch(workspace* wrk);
-void get_b(workspace* wrk);
+void get_dual_linear_term(workspace* wrk);
 void reset_working_set(workspace* wrk);
-u32 is_dual_feasible(f64* p, u32 n);
+u32 is_dual_feasible(f64* p, u32* p_sign, u32 n);
 void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr);
 void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr);
 void compute_du_deta(workspace* wrk);
-u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr);
-void get_most_violated(workspace* wrk, constraint_t* constr);
-u32 check_infeasibility(f64* p, u32 n);
+u32 check_constraints_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* constr);
+void get_most_violated_constraint(workspace* wrk, constraint_t* constr);
+u32 check_infeasibility(f64* p, u32* p_sign, u32 n);
 void get_Cu_Dx(workspace* wrk);
 u32 is_active(workspace* wrk, constraint_t* constr);
 void set_active(workspace* wrk, constraint_t* constr);
@@ -161,7 +158,8 @@ void workspace_init(
     workspace* wrk, f64* A, f64* B, 
     f64* w, f64* Q, f64* R, f64* S,
     f64* q, f64* r, f64* D, f64* C, 
-    f64* d, f64* c, f64* Deq, f64* Ceq,
+    f64* du, f64* dl, f64* cu,
+    f64* cl, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
     u32* eqx, u32* equ, u32 max_iter,
@@ -209,7 +207,7 @@ u32 solve(workspace* wrk) {
     for (u32 k=0; k<wrk->max_iter; ++k) {
         if (!wrk->dH_singular) {
             solve_dual_qp(wrk);
-            if (is_dual_feasible(wrk->p, wrk->as.n_active)) {
+            if (is_dual_feasible(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
                 wrk->constraint_selection_rule(wrk, &constr);
                 if (constr.t < 0) {
@@ -221,7 +219,7 @@ u32 solve(workspace* wrk) {
             } else {
                 // Form descent direction
                 for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
-                removed_constr = drop_component(wrk->xi, wrk->p, wrk->as.n_active);
+                removed_constr = drop_component(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
                 remove_constraint(wrk, removed_constr);
             }
         } else {
@@ -230,12 +228,12 @@ u32 solve(workspace* wrk) {
                 iters = k;
                 goto solve_ret;
             }
-            if (check_infeasibility(wrk->p, wrk->as.n_active)) {
+            if (check_infeasibility(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
                 wrk->return_status = INFEASIBLE;
                 iters = k;
                 goto solve_ret;
             }
-            removed_constr = drop_component(wrk->xi, wrk->p, wrk->as.n_active);
+            removed_constr = drop_component(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
             remove_constraint(wrk, removed_constr);
         }
     }
@@ -247,89 +245,6 @@ solve_ret:
     return iters;
 }
 
-void update_problem_data(
-    workspace* wrk, f64* x0, f64* q, f64* r, 
-    f64* A, f64* B, f64* w, f64* Q, f64* R, 
-    f64* S, u32* mx, u32* mu, f64* D, 
-    f64* C, f64* d, f64* c, u32* eqx,
-    u32* equ, f64* Deq, f64* Ceq, 
-    f64* deq, f64* ceq) 
-{   
-    /*
-    For simplicity:
-    - If the user wants to change any of A, B, w, it must provide again all three.
-    - If the user wants to change any of Q, R, S, it must provide again all three.
-    - If the user wants to change any of D, d, C, c, it must provide again all four, 
-      toghether with mx, mu.
-    - If the user wants to change any of Deq, deq, Ceq, ceq, it must provide again all four, 
-      toghether with eqx, equ.
-    */
-    u32 N = wrk->N;
-    u32 nx = wrk->nx;
-    u32 nu = wrk->nu;
-    u32 constraints_were_updated = D != 0 || C != 0;
-    u32 equalities_were_updated = Deq != 0 || Ceq != 0;
-    u32 dynamics_was_updated = A != 0;
-    u32 cost_was_updated = Q != 0;
-
-    memcpy(wrk->x_lqr, x0, nx*sizeof(f64));
-    if (q) memcpy(wrk->q, q, N*nx*sizeof(f64));
-    if (r) memcpy(wrk->r, r, N*nu*sizeof(f64));
-    if (constraints_were_updated) {
-        // Deallocate and reallocate workspace.
-        free(wrk->ineq_memory);
-        allocate_inequalities_workspace(wrk, mx, mu);
-
-        memcpy(wrk->D, D, get_ncx(wrk)*nx*sizeof(f64));
-        memcpy(wrk->C, C, get_ncu(wrk)*nu*sizeof(f64));
-        memcpy(wrk->d, d, get_ncx(wrk)*sizeof(f64));
-        memcpy(wrk->c, c, get_ncu(wrk)*sizeof(f64));
-
-        // Previous working set is discarded.
-        reset_working_set(wrk);
-    }
-    if (equalities_were_updated) {
-        // Deallocate and reallocate workspace.
-        free(wrk->eq_memory);
-        allocate_equalities_workspace(wrk, eqx, equ);
-
-        memcpy(wrk->Deq, Deq, get_neqx(wrk)*nx*sizeof(f64));
-        memcpy(wrk->Ceq, Ceq, get_nequ(wrk)*nu*sizeof(f64));
-        memcpy(wrk->deq, deq, get_neqx(wrk)*sizeof(f64));
-        memcpy(wrk->ceq, ceq, get_nequ(wrk)*sizeof(f64));
-    }
-    if (cost_was_updated) {
-        for (u32 t=0; t<N; ++t) {
-            blasfeo_pack_tran_dmat(nx, nx, Q+t*nx*nx, nx, wrk->Q+t, 0, 0);
-            blasfeo_pack_tran_dmat(nu, nu, R+t*nu*nu, nu, wrk->R+t, 0, 0);
-            blasfeo_pack_dmat(nx, nu, S+t*nx*nu, nx, wrk->S+t, 0, 0);
-        }
-    }
-    if (dynamics_was_updated) {
-        for (u32 t=0; t<N; ++t) {
-            blasfeo_pack_dmat(nx, nx, A+t*nx*nx, nx, wrk->A+t, 0, 0);    
-            blasfeo_pack_dmat(nu, nx, B+t*nu*nx, nu, wrk->B+t, 0, 0);    
-        }
-        memcpy(wrk->w, w, wrk->N*wrk->nx*sizeof(f64));
-    }
-
-    if (dynamics_was_updated || cost_was_updated || equalities_were_updated)
-        solve_riccati(wrk);
-    
-    // If constraints were not updated but dH changed, rebuild
-    // from scratch. If new dH turns out to be singular, reset WS.
-    u32 corrupt_workspace = wrk->dH_singular; // Corrupt workspace due to non "SOLVE" return status.
-    u32 new_dH_singular = !wrk->dH_singular && !constraints_were_updated && 
-        (cost_was_updated || dynamics_was_updated || equalities_were_updated)
-        && get_L_from_scratch(wrk);
-    if (corrupt_workspace || new_dH_singular) reset_working_set(wrk);
-
-    memcpy(wrk->r_wrk, wrk->r, nu*N*sizeof(f64));
-    memcpy(wrk->q_wrk, wrk->q, nx*N*sizeof(f64));
-    solve_lqr(wrk);
-    get_b(wrk);
-}
-
 void solve_dual_qp(workspace* wrk) {
     /*
         Solve linear system dH p = - d
@@ -337,7 +252,7 @@ void solve_dual_qp(workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     
     // copy d into p
-    for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->dl[i];
+    for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->dual_linear[i];
 
     // Solve L y = -d
     trsv(wrk->p, wrk->L, n_active, wrk->W_stride);
@@ -357,23 +272,26 @@ u32 get_descent_dir(workspace* wrk) {
     trsv_t(wrk->p, wrk->L, n_active-1, W_stride);
 
     // Enforce p' b < 0.
-    f64 dotv = dot(wrk->p, wrk->dl, n_active);
+    f64 dotv = dot(wrk->p, wrk->dual_linear, n_active);
     if (dotv >= -ZERO_TOL && dotv <= ZERO_TOL) return 1;
     if (dotv > ZERO_TOL)
         negate(wrk->p, n_active);
     return 0;
 }
 
-u32 drop_component(f64* xi, f64* p, u32 n) {
+u32 drop_component(f64* xi, u32* xi_sign, f64* p, u32 n) {
     /*
-        Line search along p < 0:
+        Line search along p[i] < 0 for i upper bounds, and p[i] > 0
+        fo i lower bounds.
             xi + t*p = 0 \iff
             t = -xi / p
     */
     f64 t = INFINITY;
     u32 argmin = 0;
     for (u32 i=0; i<n; ++i) {
-        if (p[i] > -ZERO_TOL) continue;
+        if ((xi_sign[i] == 1 && p[i] > -ZERO_TOL) || 
+            (xi_sign[i] == 0 && p[i] < ZERO_TOL)) continue;
+        
         f64 tau = - xi[i] / p[i];
         if (tau < t) {
             t = tau;
@@ -388,17 +306,20 @@ void add_constraint(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
     u32 is_state = constr->is_state;
+    u32 is_upper = constr->is_upper;
     get_dH_row(wrk, constr);
     update_dH_chol_add(wrk);
     /*
         Update dual linear term
     */
     if (is_state) {
-        wrk->dl[wrk->as.n_active] = 
-            wrk->d[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx];
+        wrk->dual_linear[wrk->as.n_active] = (is_upper) ?
+            wrk->du[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx] :
+            wrk->dl[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx]; 
     } else {
-        wrk->dl[wrk->as.n_active] = 
-            wrk->c[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx];
+        wrk->dual_linear[wrk->as.n_active] = (is_upper) ?
+            wrk->cu[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx] :
+            wrk->cl[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx];
     }
 
     update_working_set_add(wrk, constr);
@@ -409,7 +330,7 @@ void remove_constraint(workspace* wrk, u32 idx) {
     update_dH_chol_remove(wrk, idx);
     // Update linear term
     for (u32 i=idx+1; i<wrk->as.n_active; ++i)
-        wrk->dl[i-1] = wrk->dl[i];
+        wrk->dual_linear[i-1] = wrk->dual_linear[i];
     // Update Mu and Meta
     for (u32 i=idx+1; i<wrk->as.n_active; ++i) {
         memcpy(wrk->Mu + (i-1)*wrk->N*wrk->nu,
@@ -428,12 +349,14 @@ void update_working_set_add(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
     u32 is_state = constr->is_state;
+    u32 is_upper = constr->is_upper;
 
     // Update ( xi_idx -> constraint ) map.
-    constraint_t new_constraint = {(i32)t, (i32)idx, is_state};
+    constraint_t new_constraint = {(i32)t, (i32)idx, is_state, is_upper};
     wrk->as.xi2con[wrk->as.n_active] = new_constraint;
 
     wrk->xi[wrk->as.n_active] = 0.0;
+    wrk->xi_sign[wrk->as.n_active] = is_upper ? 1 : 0;
     set_active(wrk, &wrk->as.xi2con[wrk->as.n_active]);
     wrk->as.n_active += 1;
     wrk->as.max_t = MAX(wrk->as.max_t, t);
@@ -444,6 +367,7 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     u32 t = wrk->as.xi2con[xi_idx].t;
     u32 idx = wrk->as.xi2con[xi_idx].idx;
     u32 is_state = wrk->as.xi2con[xi_idx].is_state;
+    u32 is_upper = wrk->as.xi2con[xi_idx].is_upper;
 
     // Update (xi_idx -> constraint info) map.
     for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) 
@@ -452,7 +376,7 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     // Compact xi.
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi[i-1] = wrk->xi[i];
-    constraint_t removed_constraint = {(i32)t, (i32)idx, is_state};
+    constraint_t removed_constraint = {(i32)t, (i32)idx, is_state, is_upper};
     set_inactive(wrk, &removed_constraint);
     wrk->as.n_active -= 1;
     // Recompute max_t
@@ -641,15 +565,20 @@ u32 get_L_from_scratch(workspace* wrk) {
     return 0;
 }
 
-void get_b(workspace* wrk) {
+void get_dual_linear_term(workspace* wrk) {
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         u32 t = wrk->as.xi2con[i].t;
         u32 idx = wrk->as.xi2con[i].idx;
         u32 is_state = wrk->as.xi2con[i].is_state;
+        u32 is_upper = wrk->as.xi2con[i].is_upper;
         if (is_state) 
-            wrk->dl[i] = wrk->d[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
+            wrk->dual_linear[i] = is_upper ? 
+                wrk->du[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx] :
+                wrk->dl[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
         else
-            wrk->dl[i] = wrk->c[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
+            wrk->dual_linear[i] = is_upper ? 
+                wrk->cu[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx] :
+                wrk->cl[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
     }
 }
 
@@ -660,12 +589,13 @@ void reset_working_set(workspace* wrk) {
     wrk->as.max_t = 0;
 }
 
-u32 is_dual_feasible(f64* p, u32 n) {
+u32 is_dual_feasible(f64* p, u32* p_sign, u32 n) {
     /*
-        Check that all components are non-negative.   
+        Check that all components have the right sign.   
     */
     for (u32 i=0; i<n; ++i) {
-        if (p[i] < -ZERO_TOL) return 0;
+        if ((p_sign[i] == 0 && p[i] > ZERO_TOL) || (p_sign[i] == 1 && p[i] < -ZERO_TOL))
+            return 0;
     }
     return 1;
 }
@@ -712,7 +642,7 @@ void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr
 
     // Compute constraint image and get most violated constraint
     get_Cu_Dx(wrk);
-    get_most_violated(wrk, constr);
+    get_most_violated_constraint(wrk, constr);
 }
 
 void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
@@ -733,10 +663,10 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
     v0.pa = wrk->u; v1.pa = wrk->eta;
     blasfeo_dvecsc(nu, -1.0, &v0, 0);
     TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
-    if (check_constraints(wrk, 0, 0, constr)) return;
+    if (check_constraints_at_t(wrk, 0, 0, constr)) return;
     v1.pa = wrk->x+nx;
     blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-    if (check_constraints(wrk, 0, 1, constr)) return;
+    if (check_constraints_at_t(wrk, 0, 1, constr)) return;
 
     for (u32 t=1; t<N; ++t) {
         u32 rho = wrk->rho[t];
@@ -753,7 +683,7 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
         TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
 
         // Check control constraints
-        if (check_constraints(wrk, t, 0, constr)) return; 
+        if (check_constraints_at_t(wrk, t, 0, constr)) return; 
 
         // Propagate state dynamics
         v0.pa = x; v1.pa = x+nx;
@@ -762,7 +692,7 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
         blasfeo_dgemv_t(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state constraints
-        if (check_constraints(wrk, t, 1, constr)) return;
+        if (check_constraints_at_t(wrk, t, 1, constr)) return;
     }
 }
 
@@ -790,9 +720,9 @@ void compute_du_deta(workspace* wrk) {
     }
 }
 
-u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr) {
+u32 check_constraints_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* constr) {
     u32 m, cm, n;
-    f64 *xu, *CD, *cd, *CuDx, *CuDx_lqr;
+    f64 *xu, *CD, *cdu, *cdl, *CuDx, *CuDx_lqr;
     if (is_state) {
         m = wrk->mx[t];
         cm = wrk->cmx[t];
@@ -801,7 +731,8 @@ u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr)
         CuDx = wrk->Dx + cm;
         CuDx_lqr = wrk->Dx_lqr + cm;
         CD = wrk->D+cm*n;
-        cd = wrk->d + cm;
+        cdu = wrk->du + cm;
+        cdl = wrk->dl + cm;
     } else {
         m = wrk->mu[t];
         cm = wrk->cmu[t];
@@ -810,7 +741,8 @@ u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr)
         CuDx = wrk->Cu+cm;
         CuDx_lqr = wrk->Cu_lqr+cm;
         CD = wrk->C+cm*n;
-        cd = wrk->c+cm;
+        cdu = wrk->cu+cm;
+        cdl = wrk->cl+cm;
     }
     struct blasfeo_dvec v0, v1;
     v0.pa = xu;
@@ -820,10 +752,17 @@ u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr)
         if (!is_active(wrk, &tmp)) {
             v1.pa = CD+i*n;
             CuDx[i] = CuDx_lqr[i] + blasfeo_ddot(n, &v0, 0, &v1, 0);
-            if (CuDx[i] - cd[i] > ZERO_TOL) {
+            if (CuDx[i] - cdu[i] > ZERO_TOL) {
                 constr->t = t;
                 constr->idx = i;
                 constr->is_state = is_state;
+                constr->is_upper = 1;
+                return 1;
+            } else if (CuDx[i] - cdl[i] < -ZERO_TOL) {
+                constr->t = t;
+                constr->idx = i;
+                constr->is_state = is_state;
+                constr->is_upper = 0;
                 return 1;
             }
         }
@@ -832,7 +771,7 @@ u32 check_constraints(workspace* wrk, u32 t, u32 is_state, constraint_t* constr)
     return 0;
 }
 
-void get_most_violated(workspace* wrk, constraint_t* constr) {
+void get_most_violated_constraint(workspace* wrk, constraint_t* constr) {
     // Return most violated constraint
     i32 tu = -1;
     i32 tx = -1;
@@ -840,6 +779,7 @@ void get_most_violated(workspace* wrk, constraint_t* constr) {
     i32 idxx = -1;
     f64 maxu = -1;
     f64 maxx = -1;
+    u32 is_upper_u, is_upper_x;
 
     /*
         Check Cu
@@ -848,11 +788,20 @@ void get_most_violated(workspace* wrk, constraint_t* constr) {
         for (u32 i=0; i<wrk->mu[tau]; ++i) {
             constraint_t tmpcon = (constraint_t) {(i32) tau, (i32) i, 0};
             if (is_active(wrk, &tmpcon)) continue;
-            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->c[wrk->cmu[tau] + i];
+            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->cu[wrk->cmu[tau] + i];
             if (tmp > ZERO_TOL && tmp > maxu) {
                 maxu = tmp;
                 idxu = i;
                 tu = tau;
+                is_upper_u = 1;
+            } else {
+                tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->cl[wrk->cmu[tau] + i];
+                if (tmp < -ZERO_TOL && -tmp > maxu) {
+                    maxu = -tmp;
+                    idxu = i;
+                    tu = tau;
+                    is_upper_u = 0;
+                }
             }
     }
     
@@ -863,11 +812,20 @@ void get_most_violated(workspace* wrk, constraint_t* constr) {
         for (u32 i=0; i<wrk->mx[tau]; ++i) {
             constraint_t tmpcon = (constraint_t){(i32) tau, (i32) i, 1};
             if (is_active(wrk, &tmpcon)) continue;
-            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->d[wrk->cmx[tau] + i];
+            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->du[wrk->cmx[tau] + i];
             if (tmp > ZERO_TOL && tmp > maxx) {
                 maxx = tmp;
                 idxx = i;
                 tx = tau;
+                is_upper_x = 1;
+            } else {
+                tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->dl[wrk->cmx[tau] + i];
+                if (tmp < -ZERO_TOL && -tmp > maxx) {
+                    maxx = -tmp;
+                    idxx = i;
+                    tx = tau;
+                    is_upper_x = 0;
+                }
             }
     }
 
@@ -875,16 +833,18 @@ void get_most_violated(workspace* wrk, constraint_t* constr) {
         constr->idx = idxx;
         constr->t = tx;
         constr->is_state = 1;
+        constr->is_upper = is_upper_x;
     } else {
         constr->idx = idxu;
         constr->t = tu;
         constr->is_state = 0;
+        constr->is_upper = is_upper_u;
     }
 }
 
-u32 check_infeasibility(f64* p, u32 n) {
+u32 check_infeasibility(f64* p, u32* p_sign, u32 n) {
     for (u32 i=0; i<n; ++i)
-        if (p[i] < -ZERO_TOL) return 0;
+        if ((p_sign[i] == 1 && p[i] < -ZERO_TOL) || (p_sign[i] == 0 && p[i] > ZERO_TOL)) return 0;
 
     return 1; 
 }
@@ -973,7 +933,8 @@ void workspace_init(
     workspace* wrk, f64* A, f64* B, 
     f64* w, f64* Q, f64* R, f64* S,
     f64* q, f64* r, f64* D, f64* C, 
-    f64* d, f64* c, f64* Deq, f64* Ceq,
+    f64* du, f64* dl, f64* cu, 
+    f64* cl, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
     u32* eqx, u32* equ, u32 max_iter,
@@ -1079,8 +1040,10 @@ void workspace_init(
     memcpy(wrk->r, r, N*nu*sizeof(f64));
     memcpy(wrk->D, D, ncx*nx*sizeof(f64));
     memcpy(wrk->C, C, ncu*nu*sizeof(f64));
-    memcpy(wrk->d, d, ncx*sizeof(f64));
-    memcpy(wrk->c, c, ncu*sizeof(f64));
+    memcpy(wrk->du, du, ncx*sizeof(f64));
+    memcpy(wrk->dl, dl, ncx*sizeof(f64));
+    memcpy(wrk->cu, cu, ncu*sizeof(f64));
+    memcpy(wrk->cl, cl, ncu*sizeof(f64));
     memcpy(wrk->Deq, Deq, neqx*nx*sizeof(f64));
     memcpy(wrk->Ceq, Ceq, nequ*nu*sizeof(f64));
     memcpy(wrk->deq, deq, neqx*sizeof(f64));
@@ -1113,15 +1076,15 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
 
     u32 tmp_size = W_stride;
     u32 nfloats = 2*nc +          // Dx, Cu, Dx_lqr, Cu_lqr
-                3*W_stride +      // xi, p, dl
+                3*W_stride +      // xi, p, dual_linear
                 ncx*nx+ncu*nu + // D, C
-                ncx+ncu +       // d, c
+                2*(ncx+ncu) +       // du, dl, cu, cl
                 W_stride*W_stride + // L
                 W_stride*2*N*nu +       // Mu, Meta
                 tmp_size;       // solver_tmp
     wrk->ineq_memory = malloc(
         nfloats*sizeof(f64) +
-        nc*sizeof(u32) +              // active_set.as_members
+        (nc+W_stride)*sizeof(u32) +              // active_set.as_members, xi_sign
         W_stride*sizeof(constraint_t)       // active_set.xi2con
     );
     f64* mem = (f64*) wrk->ineq_memory;
@@ -1131,17 +1094,20 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->Cu_lqr = mem; mem+=ncu;
     wrk->xi = mem; mem+=W_stride;
     wrk->p = mem; mem+=W_stride;
-    wrk->dl = mem; mem+=W_stride;
+    wrk->dual_linear = mem; mem+=W_stride;
     wrk->D = mem; mem+=ncx*nx;
     wrk->C = mem; mem+=ncu*nu;
-    wrk->d = mem; mem+=ncx;
-    wrk->c = mem; mem+=ncu;
+    wrk->du = mem; mem+=ncx;
+    wrk->dl = mem; mem+=ncx;
+    wrk->cu = mem; mem+=ncu;
+    wrk->cl = mem; mem+=ncu;
     wrk->L = mem; mem+=W_stride*W_stride;
     wrk->Mu = mem; mem+=W_stride*N*nu;
     wrk->Meta = mem; mem+=W_stride*N*nu;
     wrk->solver_tmp = mem; mem+=tmp_size;
     unsigned char* vmem = (unsigned char*) mem;
     wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
+    wrk->xi_sign = (u32*) vmem; vmem+=W_stride*sizeof(u32);
     wrk->as.xi2con = (constraint_t*) vmem; vmem+=W_stride*sizeof(constraint_t);
 }
 
