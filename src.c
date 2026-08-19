@@ -33,6 +33,8 @@ typedef struct {
     u32 is_state;
 } constraint_t;
 
+typedef struct workspace workspace;
+
 typedef struct {
     constraint_t* xi2con; // For each dual variable, the corresponding constraint.
     u32* as_members;
@@ -41,7 +43,7 @@ typedef struct {
     struct blasfeo_dvec a;
 } active_set;
 
-typedef struct {
+struct workspace {
     active_set as;
     void (*constraint_selection_rule)(workspace*, constraint_t*);
     void* smemory;
@@ -115,7 +117,7 @@ typedef struct {
     u32 W_stride;
     u32 neta;
     u32 max_iter;
-} workspace;
+};
 
 u32 solve(workspace* wrk);
 void update_problem_data(
@@ -757,7 +759,7 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
         v0.pa = x; v1.pa = x+nx;
         blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
         v0.pa = u;
-        blasfeo_dgemv_t(nx, nu, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+        blasfeo_dgemv_t(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state constraints
         if (check_constraints(wrk, t, 1, constr)) return;

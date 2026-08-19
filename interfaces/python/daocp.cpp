@@ -312,7 +312,8 @@ public:
               py::object C, py::object d, py::object c,
               py::object Deq, py::object Ceq,
               py::object deq, py::object ceq,
-              py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter)
+              py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter,
+              bool greedy)
         : initialized_(false), N_(N), nx_(nx), nu_(nu) {
         if (!N || !nx || !nu || !max_iter)
             throw py::value_error("N, nx, nu, and max_iter must be positive");
@@ -341,7 +342,7 @@ public:
                        Deqp.data(), Ceqp.data(), deqp.data(), ceqp.data(),
                        const_cast<f64*>(x0p.data()), N, nx, nu,
                        Dp.rows.data(), Cp.rows.data(),
-                       Deqp.rows.data(), Ceqp.rows.data(), max_iter);
+                       Deqp.rows.data(), Ceqp.rows.data(), max_iter, greedy);
         initialized_ = true;
     }
 
@@ -482,12 +483,13 @@ PYBIND11_MODULE(daocp, m) {
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, py::object, u32, u32, u32, u32>(),
+                      py::object, py::object, u32, u32, u32, u32, bool>(),
              py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"), py::arg("R"),
              py::arg("S"), py::arg("q"), py::arg("r"), py::arg("D"), py::arg("C"),
              py::arg("d"), py::arg("c"), py::arg("Deq"), py::arg("Ceq"),
              py::arg("deq"), py::arg("ceq"), py::arg("x0"), py::arg("N"),
-             py::arg("nx"), py::arg("nu"), py::arg("max_iter"))
+             py::arg("nx"), py::arg("nu"), py::arg("max_iter"),
+             py::arg("greedy") = true)
         .def("solve", &OCPsolver::solve)
         .def("update", &OCPsolver::update,
              py::arg("x0"), py::arg("q") = py::none(), py::arg("r") = py::none(),
