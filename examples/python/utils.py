@@ -10,7 +10,7 @@ def _stage(value, t, stage_ndim):
     return value if value.ndim == stage_ndim else value[t]
 
 
-def check_primal_feasibility(res, x0, A, B, w, D, C, d, c,
+def check_primal_feasibility(res, x0, A, B, w, D, C, du, dl, cu, cl,
                              Deq=None, Ceq=None, deq=None, ceq=None, tol=1e-6):
     """Assert primal feasibility and return the largest constraint violation."""
     x = np.asarray(res.x)
@@ -43,14 +43,22 @@ def check_primal_feasibility(res, x0, A, B, w, D, C, d, c,
                 equality_violation, np.max(np.abs(residual), initial=0.0)
             )
         if C is not None:
-            residual = _stage(C, t, 2) @ u[t] - _stage(c, t, 1)
+            image = _stage(C, t, 2) @ u[t]
+            upper_residual = image - _stage(cu, t, 1)
+            lower_residual = _stage(cl, t, 1) - image
             inequality_violation = max(
-                inequality_violation, np.max(residual, initial=0.0)
+                inequality_violation,
+                np.max(upper_residual, initial=0.0),
+                np.max(lower_residual, initial=0.0),
             )
         if D is not None:
-            residual = _stage(D, t, 2) @ x[t] - _stage(d, t, 1)
+            image = _stage(D, t, 2) @ x[t]
+            upper_residual = image - _stage(du, t, 1)
+            lower_residual = _stage(dl, t, 1) - image
             inequality_violation = max(
-                inequality_violation, np.max(residual, initial=0.0)
+                inequality_violation,
+                np.max(upper_residual, initial=0.0),
+                np.max(lower_residual, initial=0.0),
             )
         previous_x = x[t]
 

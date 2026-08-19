@@ -374,9 +374,11 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) 
         wrk->as.xi2con[(i-1)] = wrk->as.xi2con[i]; 
 
-    // Compact xi.
+    // Compact xi and xi_sign
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi[i-1] = wrk->xi[i];
+    for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
+        wrk->xi_sign[i-1] = wrk->xi_sign[i];
     constraint_t removed_constraint = {(i32)t, (i32)idx, is_state, is_upper};
     set_inactive(wrk, &removed_constraint);
     wrk->as.n_active -= 1;

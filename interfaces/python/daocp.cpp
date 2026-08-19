@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -216,6 +217,45 @@ void optional_constraint_pair(py::handle matrix, py::handle bounds,
     same_rows(parsed_matrix, parsed_bounds, matrix_name, bounds_name);
 }
 
+void check_bound_order(Ragged& lower, Ragged& upper,
+                       const char* lower_name, const char* upper_name) {
+    const size_t count = std::accumulate(
+        lower.rows.begin(), lower.rows.end(), static_cast<size_t>(0));
+    const f64* lower_data = lower.data();
+    const f64* upper_data = upper.data();
+    for (size_t i = 0; i < count; ++i) {
+        if (std::isnan(lower_data[i]) || std::isnan(upper_data[i]))
+            throw py::value_error(std::string(lower_name) + " and " + upper_name +
+                                  " must not contain NaN values");
+        if (lower_data[i] > upper_data[i])
+            throw py::value_error(std::string(lower_name) + " must be less than or equal to " +
+                                  upper_name + " elementwise");
+    }
+}
+
+void optional_two_sided_constraints(
+        py::handle matrix, py::handle lower, py::handle upper,
+        u32 N, u32 columns, const char* matrix_name,
+        const char* lower_name, const char* upper_name,
+        Ragged& parsed_matrix, Ragged& parsed_lower, Ragged& parsed_upper) {
+    if (matrix.is_none() && lower.is_none() && upper.is_none()) {
+        parsed_matrix = empty_ragged(N);
+        parsed_lower = empty_ragged(N);
+        parsed_upper = empty_ragged(N);
+        return;
+    }
+    if (matrix.is_none() || lower.is_none() || upper.is_none())
+        throw py::value_error(std::string(matrix_name) + ", " + lower_name + ", and " +
+                              upper_name + " must either all be provided or all be None");
+
+    parsed_matrix = ragged_matrix(matrix, N, columns, matrix_name);
+    parsed_lower = ragged_vector(lower, N, lower_name);
+    parsed_upper = ragged_vector(upper, N, upper_name);
+    same_rows(parsed_matrix, parsed_lower, matrix_name, lower_name);
+    same_rows(parsed_matrix, parsed_upper, matrix_name, upper_name);
+    check_bound_order(parsed_lower, parsed_upper, lower_name, upper_name);
+}
+
 bool symmetric(const double* A, u32 n) {
     double scale = 1.0;
     for (u32 i = 0; i < n * n; ++i) {
@@ -309,7 +349,8 @@ public:
     OCPsolver(py::object A, py::object B, py::object w,
               py::object Q, py::object R, py::object S,
               py::object q, py::object r, py::object D,
-              py::object C, py::object d, py::object c,
+              py::object C, py::object du, py::object dl,
+              py::object cu, py::object cl,
               py::object Deq, py::object Ceq,
               py::object deq, py::object ceq,
               py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter,
@@ -327,9 +368,11 @@ public:
         Array qp = horizon_array(q, "q", N, {nx});
         Array rp = horizon_array(r, "r", N, {nu});
         Array x0p = fixed_array(x0, "x0", {nx});
-        Ragged Dp, Cp, dp, cp, Deqp, Ceqp, deqp, ceqp;
-        optional_constraint_pair(D, d, N, nx, "D", "d", Dp, dp);
-        optional_constraint_pair(C, c, N, nu, "C", "c", Cp, cp);
+        Ragged Dp, Cp, dup, dlp, cup, clp, Deqp, Ceqp, deqp, ceqp;
+        optional_two_sided_constraints(
+            D, dl, du, N, nx, "D", "dl", "du", Dp, dlp, dup);
+        optional_two_sided_constraints(
+            C, cl, cu, N, nu, "C", "cl", "cu", Cp, clp, cup);
         optional_constraint_pair(Deq, deq, N, nx, "Deq", "deq", Deqp, deqp);
         optional_constraint_pair(Ceq, ceq, N, nu, "Ceq", "ceq", Ceqp, ceqp);
         check_cost(Qp, Rp, Sp, N, nx, nu);
@@ -338,7 +381,7 @@ public:
                        const_cast<f64*>(wp.data()), const_cast<f64*>(Qp.data()),
                        const_cast<f64*>(Rp.data()), const_cast<f64*>(Sp.data()),
                        const_cast<f64*>(qp.data()), const_cast<f64*>(rp.data()),
-                       Dp.data(), Cp.data(), dp.data(), cp.data(),
+                       Dp.data(), Cp.data(), dup.data(), dlp.data(), cup.data(), clp.data(),
                        Deqp.data(), Ceqp.data(), deqp.data(), ceqp.data(),
                        const_cast<f64*>(x0p.data()), N, nx, nu,
                        Dp.rows.data(), Cp.rows.data(),
@@ -414,10 +457,12 @@ PYBIND11_MODULE(daocp, m) {
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, py::object, u32, u32, u32, u32, bool>(),
+                      py::object, py::object, py::object, py::object,
+                      u32, u32, u32, u32, bool>(),
              py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"), py::arg("R"),
              py::arg("S"), py::arg("q"), py::arg("r"), py::arg("D"), py::arg("C"),
-             py::arg("d"), py::arg("c"), py::arg("Deq"), py::arg("Ceq"),
+             py::arg("du"), py::arg("dl"), py::arg("cu"), py::arg("cl"),
+             py::arg("Deq"), py::arg("Ceq"),
              py::arg("deq"), py::arg("ceq"), py::arg("x0"), py::arg("N"),
              py::arg("nx"), py::arg("nu"), py::arg("max_iter"),
              py::arg("greedy") = true)
