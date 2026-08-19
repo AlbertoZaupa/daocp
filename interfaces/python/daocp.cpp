@@ -369,88 +369,19 @@ public:
         return result;
     }
 
-    void update(py::object x0, py::object q, py::object r,
-                py::object A, py::object B, py::object w,
-                py::object Q, py::object R, py::object S,
-                py::object D, py::object C, py::object d, py::object c,
-                py::object Deq, py::object Ceq,
-                py::object deq, py::object ceq) {
+    void update(py::object x0, py::object q, py::object r) {
         Array x0p = fixed_array(x0, "x0", {nx_});
-        Array qp, rp, Ap, Bp, wp, Qp, Rp, Sp;
-        Ragged Dp, Cp, dp, cp, Deqp, Ceqp, deqp, ceqp;
+        Array qp, rp;
 
         const bool has_q = !q.is_none();
         const bool has_r = !r.is_none();
         if (has_q) qp = horizon_array(q, "q", N_, {nx_});
         if (has_r) rp = horizon_array(r, "r", N_, {nu_});
 
-        const bool dynamics = !A.is_none() || !B.is_none() || !w.is_none();
-        if (dynamics && (A.is_none() || B.is_none() || w.is_none()))
-            throw py::value_error("A, B, and w must be updated together");
-        if (dynamics) {
-            Ap = horizon_array(A, "A", N_, {nx_, nx_});
-            Bp = horizon_array(B, "B", N_, {nx_, nu_});
-            wp = horizon_array(w, "w", N_, {nx_});
-        }
-
-        const bool cost = !Q.is_none() || !R.is_none() || !S.is_none();
-        if (cost && (Q.is_none() || R.is_none() || S.is_none()))
-            throw py::value_error("Q, R, and S must be updated together");
-        if (cost) {
-            Qp = horizon_array(Q, "Q", N_, {nx_, nx_});
-            Rp = horizon_array(R, "R", N_, {nu_, nu_});
-            Sp = horizon_array(S, "S", N_, {nu_, nx_});
-            check_cost(Qp, Rp, Sp, N_, nx_, nu_);
-        }
-
-        const bool constraints = !D.is_none() || !C.is_none() || !d.is_none() || !c.is_none();
-        if (constraints && (D.is_none() || C.is_none() || d.is_none() || c.is_none()))
-            throw py::value_error("D, C, d, and c must be updated together");
-        if (constraints) {
-            Dp = ragged_matrix(D, N_, nx_, "D");
-            Cp = ragged_matrix(C, N_, nu_, "C");
-            dp = ragged_vector(d, N_, "d");
-            cp = ragged_vector(c, N_, "c");
-            same_rows(Dp, dp, "D", "d");
-            same_rows(Cp, cp, "C", "c");
-        }
-
-        const bool equalities = !Deq.is_none() || !Ceq.is_none() ||
-                                !deq.is_none() || !ceq.is_none();
-        if (equalities &&
-            (Deq.is_none() || Ceq.is_none() || deq.is_none() || ceq.is_none()))
-            throw py::value_error("Deq, Ceq, deq, and ceq must be updated together");
-        if (equalities) {
-            Deqp = ragged_matrix(Deq, N_, nx_, "Deq");
-            Ceqp = ragged_matrix(Ceq, N_, nu_, "Ceq");
-            deqp = ragged_vector(deq, N_, "deq");
-            ceqp = ragged_vector(ceq, N_, "ceq");
-            same_rows(Deqp, deqp, "Deq", "deq");
-            same_rows(Ceqp, ceqp, "Ceq", "ceq");
-        }
-
-        update_problem_data(
+        ::update_problem_data(
             &wrk_, const_cast<f64*>(x0p.data()),
             has_q ? const_cast<f64*>(qp.data()) : nullptr,
-            has_r ? const_cast<f64*>(rp.data()) : nullptr,
-            dynamics ? const_cast<f64*>(Ap.data()) : nullptr,
-            dynamics ? const_cast<f64*>(Bp.data()) : nullptr,
-            dynamics ? const_cast<f64*>(wp.data()) : nullptr,
-            cost ? const_cast<f64*>(Qp.data()) : nullptr,
-            cost ? const_cast<f64*>(Rp.data()) : nullptr,
-            cost ? const_cast<f64*>(Sp.data()) : nullptr,
-            constraints ? Dp.rows.data() : nullptr,
-            constraints ? Cp.rows.data() : nullptr,
-            constraints ? Dp.data() : nullptr,
-            constraints ? Cp.data() : nullptr,
-            constraints ? dp.data() : nullptr,
-            constraints ? cp.data() : nullptr,
-            equalities ? Deqp.rows.data() : nullptr,
-            equalities ? Ceqp.rows.data() : nullptr,
-            equalities ? Deqp.data() : nullptr,
-            equalities ? Ceqp.data() : nullptr,
-            equalities ? deqp.data() : nullptr,
-            equalities ? ceqp.data() : nullptr);
+            has_r ? const_cast<f64*>(rp.data()) : nullptr);
     }
 
 private:
@@ -492,12 +423,5 @@ PYBIND11_MODULE(daocp, m) {
              py::arg("greedy") = true)
         .def("solve", &OCPsolver::solve)
         .def("update", &OCPsolver::update,
-             py::arg("x0"), py::arg("q") = py::none(), py::arg("r") = py::none(),
-             py::arg("A") = py::none(), py::arg("B") = py::none(),
-             py::arg("w") = py::none(), py::arg("Q") = py::none(),
-             py::arg("R") = py::none(), py::arg("S") = py::none(),
-             py::arg("D") = py::none(), py::arg("C") = py::none(),
-             py::arg("d") = py::none(), py::arg("c") = py::none(),
-             py::arg("Deq") = py::none(), py::arg("Ceq") = py::none(),
-             py::arg("deq") = py::none(), py::arg("ceq") = py::none());
+             py::arg("x0"), py::arg("q") = py::none(), py::arg("r") = py::none());
 }

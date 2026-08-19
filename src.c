@@ -167,6 +167,7 @@ void workspace_init(
 void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu);
 void allocate_equalities_workspace(workspace* wrk, u32* eqx, u32* equ);
 void workspace_free(workspace* wrk);
+void update_problem_data(workspace* wrk, f64* x0, f64* q, f64* r);
 void solve_riccati(workspace* wrk);
 void solve_lqr(workspace* wrk);
 u32 eqcon_infeasible(workspace* wrk);
@@ -1158,6 +1159,23 @@ void workspace_free(workspace* wrk) {
     free(wrk->smemory);
     free(wrk->ineq_memory);
     free(wrk->eq_memory);
+}
+
+void update_problem_data(workspace* wrk, f64* x0, f64* q, f64* r) {   
+    u32 N = wrk->N;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+
+    memcpy(wrk->x_lqr, x0, nx*sizeof(f64));
+    if (q) memcpy(wrk->q, q, N*nx*sizeof(f64));
+    if (r) memcpy(wrk->r, r, N*nu*sizeof(f64));
+    
+    if (wrk->dH_singular) reset_working_set(wrk);
+
+    memcpy(wrk->r_wrk, wrk->r, nu*N*sizeof(f64));
+    memcpy(wrk->q_wrk, wrk->q, nx*N*sizeof(f64));
+    solve_lqr(wrk);
+    get_dual_linear_term(wrk);
 }
 
 void solve_riccati(workspace* wrk) {
