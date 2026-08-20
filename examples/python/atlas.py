@@ -21,11 +21,11 @@ P = dare(A, B, Q, R)
 x_ref = data['x_ref']
 u_ref = data['u_ref']
 x0 = data['x0']
-C = np.eye(nu)
 ub = data['d_u'] - u_ref
 lb = -data['d_u'] - u_ref
-cu = ub
-cl = lb
+idxbu = np.arange(nu)
+lbu = lb
+ubu = ub
 dx0 = x0 - x_ref
 q = np.zeros(nx)
 r = np.zeros(nu)
@@ -37,13 +37,15 @@ nreps = 200
 
 def solve_ocp():
     solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, C, None, None, cu, cl,
+                        q, r, None, idxbu, None, None, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
     primal_violation = check_primal_feasibility(
-        res, dx0, A, B, w, None, C, None, None, cu, cl,
+        res, dx0, A, B, w, None, idxbu, None, None, lbu, ubu,
+        None, None, None, None, None, None,
         None, None, None, None
     )
     print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
@@ -54,7 +56,8 @@ def time_ocp():
     total = 0
     for i in range(nreps):
         solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, C, None, None, cu, cl,
+                        q, r, None, idxbu, None, None, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         dx0, N, nx, nu, max_iter)
         res = solver.solve()
@@ -63,7 +66,8 @@ def time_ocp():
 
 def solve_mpc():
     solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, C, None, None, cu, cl,
+                        q, r, None, idxbu, None, None, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         dx0, N, nx, nu, max_iter)
     state = dx0.copy()

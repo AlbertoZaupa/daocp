@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -15,6 +16,7 @@ extern "C" {
 
 namespace py = pybind11;
 using Array = py::array_t<double, py::array::c_style | py::array::forcecast>;
+using IndexArray = py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>;
 
 namespace {
 
@@ -87,9 +89,102 @@ struct Ragged {
     }
 };
 
+struct IndexRagged {
+    std::vector<u32> values;
+    std::vector<u32> rows;
+    u32 empty_value = 0;
+
+    u32* data() {
+        return values.empty() ? &empty_value : values.data();
+    }
+};
+
 Ragged empty_ragged(u32 N) {
     Ragged out;
     out.rows.assign(N, 0);
+    return out;
+}
+
+IndexRagged empty_index_ragged(u32 N) {
+    IndexRagged out;
+    out.rows.assign(N, 0);
+    return out;
+}
+
+IndexArray index_array(py::handle value, const char* name) {
+    py::array input = py::array::ensure(value);
+    if (!input)
+        throw py::type_error(std::string(name) + " must be an integer-valued array");
+    const char kind = input.dtype().kind();
+    if (kind != 'i' && kind != 'u')
+        throw py::type_error(std::string(name) + " must be an integer-valued array");
+    IndexArray out = IndexArray::ensure(input);
+    if (!out)
+        throw py::type_error(std::string(name) + " must be an integer-valued array");
+    return out;
+}
+
+void append_indices(IndexRagged& out, const std::int64_t* values, py::ssize_t count,
+                    u32 dimension, const char* name, u32 t) {
+    std::vector<bool> seen(dimension, false);
+    for (py::ssize_t i = 0; i < count; ++i) {
+        const std::int64_t index = values[i];
+        if (index < 0 || static_cast<std::uint64_t>(index) >= dimension)
+            throw py::value_error(std::string(name) + " stage " + std::to_string(t) +
+                                  " contains an out-of-range index");
+        const u32 converted = static_cast<u32>(index);
+        if (seen[converted])
+            throw py::value_error(std::string(name) + " stage " + std::to_string(t) +
+                                  " contains duplicate indices");
+        seen[converted] = true;
+        out.values.push_back(converted);
+    }
+}
+
+IndexRagged ragged_indices(py::handle value, u32 N, u32 dimension, const char* name) {
+    IndexRagged out;
+    out.rows.reserve(N);
+
+    if (py::isinstance<py::array>(value)) {
+        IndexArray input = index_array(value, name);
+        if (input.ndim() == 1) {
+            if (input.shape(0) > std::numeric_limits<u32>::max())
+                throw py::value_error(std::string(name) + " is too long");
+            const u32 rows = static_cast<u32>(input.shape(0));
+            out.rows.assign(N, rows);
+            for (u32 t = 0; t < N; ++t)
+                append_indices(out, input.data(), input.size(), dimension, name, t);
+            return out;
+        }
+
+        if (input.ndim() != 2 || input.shape(0) != N)
+            throw py::value_error(std::string(name) + " must have shape (m,) or (N, m)");
+        if (input.shape(1) > std::numeric_limits<u32>::max())
+            throw py::value_error(std::string(name) + " is too long");
+        const u32 rows = static_cast<u32>(input.shape(1));
+        out.rows.assign(N, rows);
+        for (u32 t = 0; t < N; ++t)
+            append_indices(out, input.data() + static_cast<size_t>(t) * rows,
+                           rows, dimension, name, t);
+        return out;
+    }
+
+    if (!py::isinstance<py::sequence>(value))
+        throw py::type_error(std::string(name) +
+                             " must be an array or a sequence of arrays");
+    py::sequence stages = py::reinterpret_borrow<py::sequence>(value);
+    if (py::len(stages) != N)
+        throw py::value_error(std::string(name) + " must contain N stages");
+    for (u32 t = 0; t < N; ++t) {
+        IndexArray stage = index_array(stages[t], name);
+        if (stage.ndim() != 1)
+            throw py::value_error(std::string(name) + " stage " + std::to_string(t) +
+                                  " has an inconsistent shape");
+        if (stage.shape(0) > std::numeric_limits<u32>::max())
+            throw py::value_error(std::string(name) + " is too long");
+        out.rows.push_back(static_cast<u32>(stage.shape(0)));
+        append_indices(out, stage.data(), stage.size(), dimension, name, t);
+    }
     return out;
 }
 
@@ -256,6 +351,33 @@ void optional_two_sided_constraints(
     check_bound_order(parsed_lower, parsed_upper, lower_name, upper_name);
 }
 
+void optional_bounds(
+        py::handle indices, py::handle lower, py::handle upper,
+        u32 N, u32 dimension, const char* indices_name,
+        const char* lower_name, const char* upper_name,
+        IndexRagged& parsed_indices, Ragged& parsed_lower, Ragged& parsed_upper) {
+    if (indices.is_none() && lower.is_none() && upper.is_none()) {
+        parsed_indices = empty_index_ragged(N);
+        parsed_lower = empty_ragged(N);
+        parsed_upper = empty_ragged(N);
+        return;
+    }
+    if (indices.is_none() || lower.is_none() || upper.is_none())
+        throw py::value_error(std::string(indices_name) + ", " + lower_name + ", and " +
+                              upper_name + " must either all be provided or all be None");
+
+    parsed_indices = ragged_indices(indices, N, dimension, indices_name);
+    parsed_lower = ragged_vector(lower, N, lower_name);
+    parsed_upper = ragged_vector(upper, N, upper_name);
+    if (parsed_indices.rows != parsed_lower.rows)
+        throw py::value_error(std::string(indices_name) + " and " + lower_name +
+                              " must have the same length at every stage");
+    if (parsed_indices.rows != parsed_upper.rows)
+        throw py::value_error(std::string(indices_name) + " and " + upper_name +
+                              " must have the same length at every stage");
+    check_bound_order(parsed_lower, parsed_upper, lower_name, upper_name);
+}
+
 bool symmetric(const double* A, u32 n) {
     double scale = 1.0;
     for (u32 i = 0; i < n * n; ++i) {
@@ -348,8 +470,12 @@ class OCPsolver {
 public:
     OCPsolver(py::object A, py::object B, py::object w,
               py::object Q, py::object R, py::object S,
-              py::object q, py::object r, py::object D,
-              py::object C, py::object du, py::object dl,
+              py::object q, py::object r,
+              py::object idxbx, py::object idxbu,
+              py::object lbx, py::object ubx,
+              py::object lbu, py::object ubu,
+              py::object D, py::object C,
+              py::object du, py::object dl,
               py::object cu, py::object cl,
               py::object Deq, py::object Ceq,
               py::object deq, py::object ceq,
@@ -368,7 +494,13 @@ public:
         Array qp = horizon_array(q, "q", N, {nx});
         Array rp = horizon_array(r, "r", N, {nu});
         Array x0p = fixed_array(x0, "x0", {nx});
+        IndexRagged idxbxp, idxbup;
+        Ragged lbxp, ubxp, lbup, ubup;
         Ragged Dp, Cp, dup, dlp, cup, clp, Deqp, Ceqp, deqp, ceqp;
+        optional_bounds(
+            idxbx, lbx, ubx, N, nx, "idxbx", "lbx", "ubx", idxbxp, lbxp, ubxp);
+        optional_bounds(
+            idxbu, lbu, ubu, N, nu, "idxbu", "lbu", "ubu", idxbup, lbup, ubup);
         optional_two_sided_constraints(
             D, dl, du, N, nx, "D", "dl", "du", Dp, dlp, dup);
         optional_two_sided_constraints(
@@ -381,10 +513,13 @@ public:
                        const_cast<f64*>(wp.data()), const_cast<f64*>(Qp.data()),
                        const_cast<f64*>(Rp.data()), const_cast<f64*>(Sp.data()),
                        const_cast<f64*>(qp.data()), const_cast<f64*>(rp.data()),
+                       idxbxp.data(), idxbup.data(),
+                       lbxp.data(), ubxp.data(), lbup.data(), ubup.data(),
                        Dp.data(), Cp.data(), dup.data(), dlp.data(), cup.data(), clp.data(),
                        Deqp.data(), Ceqp.data(), deqp.data(), ceqp.data(),
                        const_cast<f64*>(x0p.data()), N, nx, nu,
                        Dp.rows.data(), Cp.rows.data(),
+                       idxbxp.rows.data(), idxbup.rows.data(),
                        Deqp.rows.data(), Ceqp.rows.data(), max_iter, greedy);
         initialized_ = true;
     }
@@ -458,9 +593,14 @@ PYBIND11_MODULE(daocp, m) {
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object,
+                      py::object, py::object, py::object, py::object, py::object,
+                      py::object,
                       u32, u32, u32, u32, bool>(),
              py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"), py::arg("R"),
-             py::arg("S"), py::arg("q"), py::arg("r"), py::arg("D"), py::arg("C"),
+             py::arg("S"), py::arg("q"), py::arg("r"),
+             py::arg("idxbx"), py::arg("idxbu"),
+             py::arg("lbx"), py::arg("ubx"), py::arg("lbu"), py::arg("ubu"),
+             py::arg("D"), py::arg("C"),
              py::arg("du"), py::arg("dl"), py::arg("cu"), py::arg("cl"),
              py::arg("Deq"), py::arg("Ceq"),
              py::arg("deq"), py::arg("ceq"), py::arg("x0"), py::arg("N"),

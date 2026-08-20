@@ -18,12 +18,12 @@ P = dare(A, B, Q, R)
 S = np.zeros((nu, nx))
 q = np.zeros(nx)
 r = np.zeros(nu)
-C = np.eye(nu)
-cl = -np.ones(nu)
-cu = np.ones(nu)
-D = np.eye(nx)
-dl = np.array([-35, -30])
-du = np.array([35, 30])
+idxbu = np.arange(nu)
+lbu = -np.ones(nu)
+ubu = np.ones(nu)
+idxbx = np.arange(nx)
+lbx = np.array([-35, -30])
+ubx = np.array([35, 30])
 x0 = np.array([10, 5])
 max_iter = 1000
 N = 20
@@ -34,13 +34,15 @@ nreps = 1000
 
 def solve_ocp():
     solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, D, C, du, dl, cu, cl,
+                        q, r, idxbx, idxbu, lbx, ubx, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         x0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED"
     primal_violation = check_primal_feasibility(
-        res, x0, A, B, w, D, C, du, dl, cu, cl,
+        res, x0, A, B, w, idxbx, idxbu, lbx, ubx, lbu, ubu,
+        None, None, None, None, None, None,
         None, None, None, None,
     )
     print(f"Optimal control over horizon {N}:")
@@ -55,7 +57,8 @@ def time_ocp():
     total = 0
     for i in range(nreps):
         solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, D, C, du, dl, cu, cl,
+                        q, r, idxbx, idxbu, lbx, ubx, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         x0, N, nx, nu, max_iter)
         res = solver.solve()
@@ -64,7 +67,8 @@ def time_ocp():
 
 def solve_mpc():
     solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, D, C, du, dl, cu, cl,
+                        q, r, idxbx, idxbu, lbx, ubx, lbu, ubu,
+                        None, None, None, None, None, None,
                         None, None, None, None,
                         x0, N, nx, nu, max_iter)
     state = x0.copy()

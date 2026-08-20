@@ -23,14 +23,12 @@ R = data['R']
 P = dare(A, B, Q, R)
 Deq = data["C_pf"][:, 32:]
 deq = np.zeros(12)
-Cu = np.block([
-    [np.eye(20), np.zeros((20, 12))],
-    [data["C_nf"][:, :32]]
-])
-lbu = np.hstack([data["l"][-20:], data["l_nf"]])
-C = Cu
-cl = lbu
-cu = np.hstack([data["u"][-20:], np.full(len(data["l_nf"]), np.inf)])
+idxbu = np.arange(20)
+lbu = tau_low
+ubu = tau_upp
+C = data["C_nf"][:, :32]
+cl = data["l_nf"]
+cu = np.full(len(cl), np.inf)
 dx0 = data["dX"][:52]
 q = np.zeros(nx)
 r = np.zeros(nu)
@@ -42,13 +40,15 @@ nreps = 200
 
 def solve_ocp():
     solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, C, None, None, cu, cl,
+                        q, r, None, idxbu, None, None, lbu, ubu,
+                        None, C, None, None, cu, cl,
                         Deq, None, deq, None,
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
     primal_violation = check_primal_feasibility(
-        res, dx0, A, B, w, None, C, None, None, cu, cl,
+        res, dx0, A, B, w, None, idxbu, None, None, lbu, ubu,
+        None, C, None, None, cu, cl,
         Deq, None, deq, None
     )
     print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
@@ -59,7 +59,8 @@ def time_ocp():
     total = 0
     for i in range(nreps):
         solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, C, None, None, cu, cl,
+                        q, r, None, idxbu, None, None, lbu, ubu,
+                        None, C, None, None, cu, cl,
                         Deq, None, deq, None,
                         dx0, N, nx, nu, max_iter)
         res = solver.solve()
