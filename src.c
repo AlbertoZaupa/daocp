@@ -30,6 +30,7 @@ typedef int32_t i32;
 typedef struct {
     i32 t;
     i32 idx;
+    u32 is_bound;
     u32 is_state;
     u32 is_upper;
 } constraint_t;
@@ -38,7 +39,8 @@ typedef struct workspace workspace;
 
 typedef struct {
     constraint_t* xi2con; // For each dual variable, the corresponding constraint.
-    u32* as_members;
+    u32* constraints;
+    u32* bounds;
     u32 n_active;
     u32 max_t;
     struct blasfeo_dvec a;
@@ -72,6 +74,12 @@ struct workspace {
     f64* cu;
     f64* dl;
     f64* du;
+    u32* idxbu;
+    u32* idxbx;
+    f64* lbu;
+    f64* ubu;
+    f64* lbx;
+    f64* ubx;
     f64* Ceq;
     f64* Deq;
     f64* ceq;
@@ -109,6 +117,10 @@ struct workspace {
     u32* cmx;
     u32* mu;
     u32* cmu;
+    u32* nbx;
+    u32* cbx;
+    u32* nbu;
+    u32* cbu;
     u32* eqx;
     u32* equ;
     u32* ceqx;
@@ -118,6 +130,7 @@ struct workspace {
     u32 neq_x0;
     u32 N;
     u32 nc;
+    u32 nb;
     u32 W_stride;
     u32 neta;
     u32 max_iter;
@@ -142,29 +155,31 @@ u32 is_dual_feasible(f64* p, u32* p_sign, u32 n);
 void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr);
 void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr);
 void compute_du_deta(workspace* wrk);
-u32 check_constraints_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* constr);
 void get_most_violated_constraint(workspace* wrk, constraint_t* constr);
 u32 check_infeasibility(f64* p, u32* p_sign, u32 n);
-void get_Cu_Dx(workspace* wrk);
-u32 is_active(workspace* wrk, constraint_t* constr);
+u32 is_active(workspace* wrk, u32 t, u32 i, u32 is_bound, u32 is_state);
 void set_active(workspace* wrk, constraint_t* constr);
 void set_inactive(workspace* wrk, constraint_t* constr);
 u32 get_ncx(workspace* wrk);
 u32 get_ncu(workspace* wrk);
+u32 get_nbx(workspace* wrk);
+u32 get_nbu(workspace* wrk);
 u32 get_neqx(workspace* wrk);
 u32 get_nequ(workspace* wrk);
 void compute_prefix_sum(u32* ca, u32* a, u32 n);
 void workspace_init(
     workspace* wrk, f64* A, f64* B, 
     f64* w, f64* Q, f64* R, f64* S,
-    f64* q, f64* r, f64* D, f64* C, 
-    f64* du, f64* dl, f64* cu,
+    f64* q, f64* r, u32* idxbx, 
+    u32* idxbu, f64* lbx, f64* ubx,
+    f64* lbu, f64* ubu, f64* D, f64* C, 
+    f64* du, f64* dl, f64* cu, 
     f64* cl, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
-    u32* eqx, u32* equ, u32 max_iter,
-    u32 greedy);
-void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu);
+    u32* nbx, u32* nbu, u32* eqx, u32* equ, 
+    u32 max_iter, u32 greedy);
+void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu, u32* nbx, u32* nbu);
 void allocate_equalities_workspace(workspace* wrk, u32* eqx, u32* equ);
 void workspace_free(workspace* wrk);
 void update_problem_data(workspace* wrk, f64* x0, f64* q, f64* r);
@@ -306,6 +321,7 @@ u32 drop_component(f64* xi, u32* xi_sign, f64* p, u32 n) {
 void add_constraint(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
+    u32 is_bound = constr->is_bound;
     u32 is_state = constr->is_state;
     u32 is_upper = constr->is_upper;
     get_dH_row(wrk, constr);
@@ -313,15 +329,19 @@ void add_constraint(workspace* wrk, constraint_t* constr) {
     /*
         Update dual linear term
     */
+    f64 tmp;
     if (is_state) {
-        wrk->dual_linear[wrk->as.n_active] = (is_upper) ?
-            wrk->du[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx] :
-            wrk->dl[wrk->cmx[t] + idx] - wrk->Dx_lqr[wrk->cmx[t] + idx]; 
+        if (!is_bound) tmp = ((is_upper) ? wrk->du : wrk->dl)[wrk->cmx[t] + idx]
+            - wrk->Dx_lqr[wrk->cmx[t] + idx];
+        else tmp = ((is_upper) ? wrk->ubx : wrk->lbx)[wrk->cbx[t]+idx] 
+            - wrk->x_lqr[(t+1)*wrk->nx + wrk->idxbx[wrk->cbx[t]+idx]];
     } else {
-        wrk->dual_linear[wrk->as.n_active] = (is_upper) ?
-            wrk->cu[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx] :
-            wrk->cl[wrk->cmu[t] + idx] - wrk->Cu_lqr[wrk->cmu[t] + idx];
+        if (!is_bound) tmp = ((is_upper) ? wrk->cu : wrk->cl)[wrk->cmu[t] + idx] 
+            - wrk->Cu_lqr[wrk->cmu[t] + idx];
+        else tmp = ((is_upper) ? wrk->ubu : wrk->lbu)[wrk->cbu[t]+idx]
+            - wrk->u_lqr[t*wrk->nu + wrk->idxbu[wrk->cbu[t]+idx]];
     }
+    wrk->dual_linear[wrk->as.n_active] = tmp;
 
     update_working_set_add(wrk, constr);
 }
@@ -349,11 +369,12 @@ void remove_constraint(workspace* wrk, u32 idx) {
 void update_working_set_add(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
+    u32 is_bound = constr->is_bound;
     u32 is_state = constr->is_state;
     u32 is_upper = constr->is_upper;
 
     // Update ( xi_idx -> constraint ) map.
-    constraint_t new_constraint = {(i32)t, (i32)idx, is_state, is_upper};
+    constraint_t new_constraint = {(i32)t, (i32)idx, is_bound, is_state, is_upper};
     wrk->as.xi2con[wrk->as.n_active] = new_constraint;
 
     wrk->xi[wrk->as.n_active] = 0.0;
@@ -367,6 +388,7 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
     // Retrieve constraint info.
     u32 t = wrk->as.xi2con[xi_idx].t;
     u32 idx = wrk->as.xi2con[xi_idx].idx;
+    u32 is_bound = wrk->as.xi2con[xi_idx].is_bound;
     u32 is_state = wrk->as.xi2con[xi_idx].is_state;
     u32 is_upper = wrk->as.xi2con[xi_idx].is_upper;
 
@@ -379,7 +401,7 @@ void update_working_set_remove(workspace* wrk, u32 xi_idx) {
         wrk->xi[i-1] = wrk->xi[i];
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi_sign[i-1] = wrk->xi_sign[i];
-    constraint_t removed_constraint = {(i32)t, (i32)idx, is_state, is_upper};
+    constraint_t removed_constraint = {(i32)t, (i32)idx, is_bound, is_state, is_upper};
     set_inactive(wrk, &removed_constraint);
     wrk->as.n_active -= 1;
     // Recompute max_t
@@ -397,6 +419,7 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     q[t] = D_{t,i}, q[tau!=t]=0, r=0, w=0.
     */
     u32 t = constr->t;
+    u32 is_bound = constr->is_bound;
     u32 idx = constr->idx;
     f64* tmp1 = wrk->riccati_tmp1->pA;
     f64* tmp2 = wrk->riccati_tmp2->pA;
@@ -414,14 +437,19 @@ void get_M_row(workspace* wrk, constraint_t* constr, u32 M_idx) {
     
     if (constr->is_state) { // Need DX
         // Initialize p
-        memcpy(tmp1, wrk->D + wrk->cmx[t]*nx + idx*nx, nx*sizeof(f64));
+        if (is_bound) {
+            memset(tmp1, 0, nx*sizeof(f64));
+            tmp1[wrk->idxbx[wrk->cbx[t]+idx]] = 1.0;
+        }
+        else memcpy(tmp1, wrk->D + wrk->cmx[t]*nx + idx*nx, nx*sizeof(f64));
         tau = t;
     } else { // Need CU
         tau = t-1;
         f64* u = Mu + t*nu;
         f64* eta = Meta + wrk->crho[t];
         u32 rho = wrk->rho[t];
-        memcpy(u, wrk->C+wrk->cmu[t]*nu+idx*nu, nu*sizeof(f64));
+        if (is_bound) u[wrk->idxbu[wrk->cbu[t]+idx]] = 1.0;
+        else memcpy(u, wrk->C+wrk->cmu[t]*nu+idx*nu, nu*sizeof(f64));
         v0.pa = u; v2.pa = eta;
         TRSVLQR(v0, v2, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
         
@@ -572,21 +600,28 @@ void get_dual_linear_term(workspace* wrk) {
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         u32 t = wrk->as.xi2con[i].t;
         u32 idx = wrk->as.xi2con[i].idx;
+        u32 is_bound = wrk->as.xi2con[i].idx;
         u32 is_state = wrk->as.xi2con[i].is_state;
         u32 is_upper = wrk->as.xi2con[i].is_upper;
-        if (is_state) 
-            wrk->dual_linear[i] = is_upper ? 
-                wrk->du[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx] :
-                wrk->dl[wrk->cmx[t]+idx] - wrk->Dx_lqr[wrk->cmx[t]+idx];
-        else
-            wrk->dual_linear[i] = is_upper ? 
-                wrk->cu[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx] :
-                wrk->cl[wrk->cmu[t]+idx] - wrk->Cu_lqr[wrk->cmu[t]+idx];
+        f64 tmp; 
+        if (is_state) {
+            if (!is_bound) tmp = (is_upper ? wrk->du : wrk->dl)[wrk->cmx[t]+idx]
+                - wrk->Dx_lqr[wrk->cmx[t]+idx];
+            else tmp = (is_upper ? wrk->ubx : wrk->lbx)[wrk->cbx[t]+idx]
+                - wrk->x_lqr[wrk->nx*(t+1) + wrk->idxbx[wrk->cbx[t]+idx]];
+        } else {
+            if (!is_bound) tmp = (is_upper ? wrk->cu : wrk->cl)[wrk->cmu[t]+idx]
+                - wrk->Cu_lqr[wrk->cmu[t]+idx];
+            else tmp = (is_upper ? wrk->ubu : wrk->lbu)[wrk->cbu[t]+idx]
+                - wrk->u_lqr[wrk->nu*t + wrk->idxbu[wrk->cbu[t]+idx]];
+        }
+        wrk->dual_linear[i] = tmp;
     }
 }
 
 void reset_working_set(workspace* wrk) {
-    for (u32 i=0; i<wrk->nc; ++i) wrk->as.as_members[i] = 0;
+    for (u32 i=0; i<wrk->nc; ++i) wrk->as.constraints[i] = 0;
+    for (u32 i=0; i<wrk->nb; ++i) wrk->as.bounds[i] = 0;
     wrk->as.n_active = 0;
     wrk->dH_singular = 0;
     wrk->as.max_t = 0;
@@ -644,59 +679,7 @@ void check_primal_feasibility_most_violated(workspace* wrk, constraint_t* constr
     }
 
     // Compute constraint image and get most violated constraint
-    get_Cu_Dx(wrk);
     get_most_violated_constraint(wrk, constr);
-}
-
-void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
-    u32 N = wrk->N;
-    u32 nx = wrk->nx;
-    u32 nu = wrk->nu;
-
-    // Compute feedforward terms
-    compute_du_deta(wrk);
-
-    // Run forward recursion and stop as soon as a violated constraint
-    // is detected.
-    struct blasfeo_dvec v0;
-    struct blasfeo_dvec v1;
-    constr->t = -1;
-
-    // First iteration (x0 = 0)
-    v0.pa = wrk->u; v1.pa = wrk->eta;
-    blasfeo_dvecsc(nu, -1.0, &v0, 0);
-    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
-    if (check_constraints_at_t(wrk, 0, 0, constr)) return;
-    v1.pa = wrk->x+nx;
-    blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-    if (check_constraints_at_t(wrk, 0, 1, constr)) return;
-
-    for (u32 t=1; t<N; ++t) {
-        u32 rho = wrk->rho[t];
-        f64* u = wrk->u+t*nu;
-        f64* eta = wrk->eta+wrk->crho[t];
-        f64* x = wrk->x+t*nx;
-        
-        // Compute control
-        v0.pa = u; v1.pa = x;
-        blasfeo_dgemv_t(nx, nu, -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
-        v0.pa = eta;
-        blasfeo_dgemv_t(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
-        v0.pa = u; v1.pa = eta;
-        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
-
-        // Check control constraints
-        if (check_constraints_at_t(wrk, t, 0, constr)) return; 
-
-        // Propagate state dynamics
-        v0.pa = x; v1.pa = x+nx;
-        blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-        v0.pa = u;
-        blasfeo_dgemv_t(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
-
-        // Check state constraints
-        if (check_constraints_at_t(wrk, t, 1, constr)) return;
-    }
 }
 
 void compute_du_deta(workspace* wrk) {
@@ -751,19 +734,20 @@ u32 check_constraints_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* co
     v0.pa = xu;
 
     for (u32 i=0; i<m; ++i) {
-        constraint_t tmp = (constraint_t) {(i32) t, (i32) i, is_state};
-        if (!is_active(wrk, &tmp)) {
+        if (!is_active(wrk, t, i, 0, is_state)) {
             v1.pa = CD+i*n;
             CuDx[i] = CuDx_lqr[i] + blasfeo_ddot(n, &v0, 0, &v1, 0);
             if (CuDx[i] - cdu[i] > ZERO_TOL) {
                 constr->t = t;
                 constr->idx = i;
+                constr->is_bound = 0;
                 constr->is_state = is_state;
                 constr->is_upper = 1;
                 return 1;
             } else if (CuDx[i] - cdl[i] < -ZERO_TOL) {
                 constr->t = t;
                 constr->idx = i;
+                constr->is_bound = 0;
                 constr->is_state = is_state;
                 constr->is_upper = 0;
                 return 1;
@@ -774,74 +758,191 @@ u32 check_constraints_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* co
     return 0;
 }
 
-void get_most_violated_constraint(workspace* wrk, constraint_t* constr) {
-    // Return most violated constraint
-    i32 tu = -1;
-    i32 tx = -1;
-    i32 idxu = -1;
-    i32 idxx = -1;
-    f64 maxu = -1;
-    f64 maxx = -1;
-    u32 is_upper_u, is_upper_x;
+u32 check_bounds_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* constr) {
+    u32 nb, cb, n;
+    u32* idxb;
+    f64 *xu, *lb, *ub, *xu_lqr;
+    if (is_state) {
+        idxb = wrk->idxbx;
+        nb = wrk->nbx[t];
+        cb = wrk->cbx[t];
+        n = wrk->nx;
+        xu = wrk->x+t*n+n;
+        xu_lqr = wrk->x_lqr+t*n+n;
+    } else {
+        idxb = wrk->idxbu;
+        nb = wrk->nbu[t];
+        cb = wrk->cbu[t];
+        n = wrk->nu;
+        xu = wrk->u+t*n;
+        xu_lqr = wrk->u_lqr+t*n;
+    }
 
-    /*
-        Check Cu
-    */
-    for (u32 tau=0; tau<wrk->N; ++tau)
-        for (u32 i=0; i<wrk->mu[tau]; ++i) {
-            constraint_t tmpcon = (constraint_t) {(i32) tau, (i32) i, 0};
-            if (is_active(wrk, &tmpcon)) continue;
-            f64 tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->cu[wrk->cmu[tau] + i];
-            if (tmp > ZERO_TOL && tmp > maxu) {
-                maxu = tmp;
-                idxu = i;
-                tu = tau;
-                is_upper_u = 1;
-            } else {
-                tmp = wrk->Cu[wrk->cmu[tau] + i] + wrk->Cu_lqr[wrk->cmu[tau] + i] - wrk->cl[wrk->cmu[tau] + i];
-                if (tmp < -ZERO_TOL && -tmp > maxu) {
-                    maxu = -tmp;
-                    idxu = i;
-                    tu = tau;
-                    is_upper_u = 0;
-                }
+    for (u32 i=0; i<nb; ++i) {
+        if (!is_active(wrk, t, i, 1, is_state)) {
+            f64 v = xu[idxb[i]] - xu_lqr[idxb[i]];
+            if (v - ub[i] > ZERO_TOL) {
+                constr->t = t;
+                constr->idx = i;
+                constr->is_bound = 1;
+                constr->is_state = is_state;
+                constr->is_upper = 1;
+                return 1;
+            } else if (v - lb[i] < -ZERO_TOL) {
+                constr->t = t;
+                constr->idx = i;
+                constr->is_bound = 1;
+                constr->is_state = is_state;
+                constr->is_upper = 0;
+                return 1;
             }
+        }
     }
     
-    /*
-        Check Dx
-    */
-    for (u32 tau=0; tau<wrk->N; ++tau)
+    return 0;
+}
+
+void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
+    u32 N = wrk->N;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+
+    // Compute feedforward terms
+    compute_du_deta(wrk);
+
+    // Run forward recursion and stop as soon as a violated constraint
+    // is detected.
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    constr->t = -1;
+
+    // First iteration (x0 = 0)
+    v0.pa = wrk->u; v1.pa = wrk->eta;
+    blasfeo_dvecsc(nu, -1.0, &v0, 0);
+    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
+    if (check_constraints_at_t(wrk, 0, 0, constr)) return;
+    v1.pa = wrk->x+nx;
+    blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+    if (check_constraints_at_t(wrk, 0, 1, constr)) return;
+
+    for (u32 t=1; t<N; ++t) {
+        u32 rho = wrk->rho[t];
+        f64* u = wrk->u+t*nu;
+        f64* eta = wrk->eta+wrk->crho[t];
+        f64* x = wrk->x+t*nx;
+        
+        // Compute control
+        v0.pa = u; v1.pa = x;
+        blasfeo_dgemv_t(nx, nu, -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
+        v0.pa = eta;
+        blasfeo_dgemv_t(nx, rho, 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v0.pa = u; v1.pa = eta;
+        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu, rho);
+
+        // Check control bounds
+        if (check_bounds_at_t(wrk, t, 0, constr)) return;
+
+        // Check control constraints
+        if (check_constraints_at_t(wrk, t, 0, constr)) return; 
+
+        // Propagate state dynamics
+        v0.pa = x; v1.pa = x+nx;
+        blasfeo_dgemv_t(nx, nx, 1.0, wrk->A+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        v0.pa = u;
+        blasfeo_dgemv_t(nu, nx, 1.0, wrk->B+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+
+        // Check state bounds
+        if (check_bounds_at_t(wrk, t, 1, constr)) return;
+
+        // Check state constraints
+        if (check_constraints_at_t(wrk, t, 1, constr)) return;
+    }
+}
+
+void set_maximum_violation(
+    u32* t, u32* idx, u32* is_bound, u32* is_state,
+    u32* is_upper, f64* max, u32 tau, u32 i, u32 isb,
+    u32 iss, u32 isu, f64 val
+) {
+    *t = tau; *idx = i; *is_bound = isb;
+    *is_state = iss; *is_upper=isu; *max=val; 
+}
+
+void get_most_violated_constraint(workspace* wrk, constraint_t* constr) {
+    // Return most violated constraint
+    u32 t;
+    u32 idx;
+    u32 is_state;
+    u32 is_bound;
+    u32 is_upper;
+    f64 max = -1;
+    f64 tmp, dotval;
+    u32 nx = wrk->nx;
+    u32 nu = wrk->nu;
+    struct blasfeo_dvec v0, v1;
+
+    for (u32 tau=0; tau<wrk->N; ++tau) {
+        // Check u bounds at tau
+        for (u32 i=0; i<wrk->nbu[tau]; ++i) {
+            if (is_active(wrk, t, i, 1, 0)) continue;
+            tmp = wrk->u[tau*nu+wrk->idxbu[wrk->cbu[tau]+i]] - wrk->ubu[wrk->cbu[tau]+i];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                    tau, i, 1, 0, 1, tmp);
+            tmp = wrk->lbu[wrk->cbu[tau]+i] - wrk->u[tau*nu+wrk->idxbu[wrk->cbu[tau+i]]];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                    tau, i, 1, 0, 0, tmp); 
+        }
+        // Check x bounds at tau
+        for (u32 i=0; i<wrk->nbx[tau]; ++i) {
+            if (is_active(wrk, t, i, 1, 1)) continue;
+            tmp = wrk->x[tau*nx+nx+wrk->idxbx[wrk->cbx[tau]+i]] - wrk->ubx[wrk->cbx[tau]+i];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                    tau, i, 1, 1, 1, tmp);
+            tmp = wrk->lbx[wrk->cbx[tau]+i] - wrk->x[tau*nx+nx+wrk->idxbx[wrk->cbx[tau+i]]];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                    tau, i, 1, 1, 0, tmp); 
+        } 
+        // Check Cu at tau
+        for (u32 i=0; i<wrk->mu[tau]; ++i) {
+            if (is_active(wrk, t, i, 0, 0)) continue;
+            v0.pa = wrk->C+(wrk->cmu[tau]+i)*nu; v1.pa = wrk->u+tau*nu;
+            dotval = blasfeo_ddot(nu, &v0, 0, &v1, 0) + wrk->Cu_lqr[wrk->cmu[tau]+i];
+            tmp = dotval - wrk->cu[wrk->cmu[tau]+i];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                      tau, i, 0, 0, 1, tmp);
+            tmp = wrk->lbu[wrk->cmu[tau]+i] - dotval;
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                      tau, i, 0, 0, 0, tmp);
+        }
+        // Check Dx at tau
         for (u32 i=0; i<wrk->mx[tau]; ++i) {
-            constraint_t tmpcon = (constraint_t){(i32) tau, (i32) i, 1};
-            if (is_active(wrk, &tmpcon)) continue;
-            f64 tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->du[wrk->cmx[tau] + i];
-            if (tmp > ZERO_TOL && tmp > maxx) {
-                maxx = tmp;
-                idxx = i;
-                tx = tau;
-                is_upper_x = 1;
-            } else {
-                tmp = wrk->Dx[wrk->cmx[tau] + i] + wrk->Dx_lqr[wrk->cmx[tau] + i] - wrk->dl[wrk->cmx[tau] + i];
-                if (tmp < -ZERO_TOL && -tmp > maxx) {
-                    maxx = -tmp;
-                    idxx = i;
-                    tx = tau;
-                    is_upper_x = 0;
-                }
-            }
+            if (is_active(wrk, t, i, 0, 1)) continue;
+            v0.pa = wrk->D+(wrk->cmx[tau]+i)*nx; v1.pa = wrk->x+tau*nx+nx;
+            dotval = blasfeo_ddot(nx, &v0, 0, &v1, 0) + wrk->Dx_lqr[wrk->cmx[tau]+i];
+            tmp = dotval - wrk->du[wrk->cmx[tau]+i];
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                       tau, i, 0, 1, 1, tmp);
+            tmp = wrk->dl[wrk->cmx[tau]+i] - dotval;
+            if (tmp > max)
+                set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
+                                      tau, i, 0, 1, 0, tmp);
+        }
     }
 
-    if (maxx > maxu) {
-        constr->idx = idxx;
-        constr->t = tx;
-        constr->is_state = 1;
-        constr->is_upper = is_upper_x;
-    } else {
-        constr->idx = idxu;
-        constr->t = tu;
-        constr->is_state = 0;
-        constr->is_upper = is_upper_u;
+    if (max == -1) constr->t = -1;
+    else {
+        constr->t = t;
+        constr->idx = idx;
+        constr->is_bound = is_bound;
+        constr->is_state = is_state;
+        constr->is_upper = is_upper;
     }
 }
 
@@ -852,60 +953,33 @@ u32 check_infeasibility(f64* p, u32* p_sign, u32 n) {
     return 1; 
 }
 
-void get_Cu_Dx(workspace* wrk) {
-    u32 N = wrk->N;
-    u32 nx = wrk->nx;
-    u32 nu = wrk->nu;
-    u32* mx = wrk->mx;
-    u32* cmx = wrk->cmx;
-    u32* mu = wrk->mu;
-    u32* cmu = wrk->cmu;
-    f64* u = wrk->u;
-    f64* x = wrk->x;
-    f64* Cu = wrk->Cu;
-    f64* Dx = wrk->Dx;
-    struct blasfeo_dvec v0;
-    struct blasfeo_dvec v1;
-
-    for (u32 t=0; t<N; ++t) {
-        for (u32 i=0; i<mu[t]; ++i) {
-            constraint_t constraint = {(i32)t, (i32)i, 0};
-            if (!is_active(wrk, &constraint)) {
-                v0.pa = wrk->C + cmu[t]*nu + i*nu;
-                v1.pa = u + t*nu;
-                Cu[cmu[t]+i] = blasfeo_ddot(nu, &v0, 0, &v1, 0);
-            }
-        }
-        for (u32 i=0; i<mx[t]; ++i) {
-            constraint_t constraint = {(i32)t, (i32)i, 1};
-            if (!is_active(wrk, &constraint))  {
-                v0.pa = wrk->D + cmx[t]*nx + i*nx;
-                v1.pa = x + t*nx + nx;
-                Dx[cmx[t]+i] = blasfeo_ddot(nx, &v0, 0, &v1, 0); 
-            }
-        }
-    }
-}
-
-u32 is_active(workspace* wrk, constraint_t* constr) {
-    u32 t = constr->t;
-    u32 i = constr->idx;
-    u32 is_state = constr->is_state;
-    return wrk->as.as_members[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i];
+u32 is_active(workspace* wrk, u32 t, u32 i, u32 is_bound, u32 is_state) {
+    if (is_bound)
+        return wrk->as.bounds[wrk->cbx[t]+wrk->cbu[t] + is_state*wrk->nbu[t] + i];
+    else
+        return wrk->as.constraints[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i];
 }
 
 void set_active(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 i = constr->idx;
+    u32 is_bound = constr->is_bound;
     u32 is_state = constr->is_state;
-    wrk->as.as_members[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i] = 1;
+    if (is_bound)
+        wrk->as.bounds[wrk->cbx[t]+wrk->cbu[t] + is_state*wrk->nbu[t] + i] = 1;
+    else 
+        wrk->as.constraints[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i] = 1;
 }
 
 void set_inactive(workspace* wrk, constraint_t* constr) {
     u32 t = constr->t;
     u32 i = constr->idx;
+    u32 is_bound = constr->is_bound;
     u32 is_state = constr->is_state;
-    wrk->as.as_members[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i] = 0;
+    if (is_bound)
+        wrk->as.bounds[wrk->cbx[t]+wrk->cbu[t] + is_state*wrk->nbu[t] + i] = 0;
+    else
+        wrk->as.constraints[wrk->cmx[t]+wrk->cmu[t] + is_state*wrk->mu[t] + i] = 0;
 }
 
 u32 get_ncx(workspace* wrk) {
@@ -914,6 +988,14 @@ u32 get_ncx(workspace* wrk) {
 
 u32 get_ncu(workspace* wrk) {
     return wrk->cmu[wrk->N-1]+wrk->mu[wrk->N-1];
+}
+
+u32 get_nbx(workspace* wrk) {
+    return wrk->cbx[wrk->N-1]+wrk->nbx[wrk->N-1];
+}
+
+u32 get_nbu(workspace* wrk) {
+    return wrk->cbu[wrk->N-1]+wrk->nbu[wrk->N-1];
 }
 
 u32 get_neqx(workspace* wrk) {
@@ -935,13 +1017,15 @@ void compute_prefix_sum(u32* ca, u32* a, u32 n) {
 void workspace_init(
     workspace* wrk, f64* A, f64* B, 
     f64* w, f64* Q, f64* R, f64* S,
-    f64* q, f64* r, f64* D, f64* C, 
+    f64* q, f64* r, u32* idxbx, 
+    u32* idxbu, f64* lbx, f64* ubx,
+    f64* lbu, f64* ubu, f64* D, f64* C, 
     f64* du, f64* dl, f64* cu, 
     f64* cl, f64* Deq, f64* Ceq,
     f64* deq, f64* ceq, f64* x0, u32 N, 
     u32 nx, u32 nu, u32* mx, u32* mu, 
-    u32* eqx, u32* equ, u32 max_iter,
-    u32 greedy)
+    u32* nbx, u32* nbu, u32* eqx, u32* equ, 
+    u32 max_iter, u32 greedy)
 {   
     wrk->N = N;
     wrk->nx = nx;
@@ -956,7 +1040,7 @@ void workspace_init(
     */
     u32 nfloats = 6*N*nx+2*nx + // q, q_wrk, x, x_lqr, w, Pw
                   7*N*nu;     // u, eta, u_lqr, eta_lqr, r, r_wrk, b
-    u32 nints = 10*N; // mx, cmx, mu, cmu, eqx, equ, ceqx, cequ, rho, crho
+    u32 nints = 14*N; // mx, cmx, mu, cmu, nbx, nbu, cbx, cbu, eqx, equ, ceqx, cequ, rho, crho
     u32 nmat = 11*N + 2; // A, B, Q, R, S, P, Luu, Lue, Lee, Ku, Ke, tmp1, tmp2
     wrk->smemory = malloc(
         nfloats*sizeof(f64) +
@@ -982,6 +1066,10 @@ void workspace_init(
     wrk->cmx = (u32*) u32mem; u32mem+=N*sizeof(u32);
     wrk->mu = (u32*) u32mem; u32mem+=N*sizeof(u32);
     wrk->cmu = (u32*) u32mem; u32mem+=N*sizeof(u32);
+    wrk->nbx = (u32*) u32mem; u32mem+=N*sizeof(u32);
+    wrk->nbu = (u32*) u32mem; u32mem+=N*sizeof(u32);
+    wrk->cbx = (u32*) u32mem; u32mem+=N*sizeof(u32);
+    wrk->cbu = (u32*) u32mem; u32mem+=N*sizeof(u32);
     wrk->eqx = (u32*) u32mem; u32mem+=N*sizeof(u32);
     wrk->equ = (u32*) u32mem; u32mem+=N*sizeof(u32);
     wrk->ceqx = (u32*) u32mem; u32mem+=N*sizeof(u32);
@@ -1006,7 +1094,7 @@ void workspace_init(
     /*
         Allocate dynamically sized memory
     */
-    allocate_inequalities_workspace(wrk, mx, mu);
+    allocate_inequalities_workspace(wrk, mx, mu, nbx, nbu);
     allocate_equalities_workspace(wrk, eqx, equ);
     
     u32 ncx = get_ncx(wrk);
@@ -1041,6 +1129,12 @@ void workspace_init(
     memcpy(wrk->w, w, N*nx*sizeof(f64));
     memcpy(wrk->q, q, N*nx*sizeof(f64));
     memcpy(wrk->r, r, N*nu*sizeof(f64));
+    memcpy(wrk->idxbx, idxbx, get_nbx(wrk)*sizeof(u32));
+    memcpy(wrk->idxbu, idxbu, get_nbu(wrk)*sizeof(u32));
+    memcpy(wrk->lbx, lbx, get_nbx(wrk)*sizeof(f64));
+    memcpy(wrk->ubx, ubx, get_nbx(wrk)*sizeof(f64));
+    memcpy(wrk->lbu, lbu, get_nbu(wrk)*sizeof(f64));
+    memcpy(wrk->ubu, ubu, get_nbu(wrk)*sizeof(f64));
     memcpy(wrk->D, D, ncx*nx*sizeof(f64));
     memcpy(wrk->C, C, ncu*nu*sizeof(f64));
     memcpy(wrk->du, du, ncx*sizeof(f64));
@@ -1062,19 +1156,26 @@ void workspace_init(
     solve_lqr(wrk);
 }
 
-void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
+void allocate_inequalities_workspace(
+    workspace* wrk, u32* mx, u32* mu,
+    u32* nbx, u32* nbu
+){
     u32 N = wrk->N;
     u32 nx = wrk->nx;
     u32 nu = wrk->nu;
 
     memcpy(wrk->mx, mx, N*sizeof(u32));
     memcpy(wrk->mu, mu, N*sizeof(u32));
-    // Compute prexif sums of mx and mu.
+    memcpy(wrk->nbx, nbx, N*sizeof(u32));
+    memcpy(wrk->nbu, nbu, N*sizeof(u32));
     compute_prefix_sum(wrk->cmx, wrk->mx, N);
     compute_prefix_sum(wrk->cmu, wrk->mu, N);
+    compute_prefix_sum(wrk->cbx, wrk->nbx, N);
+    compute_prefix_sum(wrk->cbu, wrk->nbu, N);
     u32 ncx = get_ncx(wrk);
     u32 ncu = get_ncu(wrk);
     u32 nc = wrk->nc = ncx + ncu;
+    u32 nb = wrk->nb = get_nbx(wrk) + get_nbu(wrk);
     u32 W_stride = wrk->W_stride = MIN(nc, N*nu+1);
 
     u32 tmp_size = W_stride;
@@ -1082,12 +1183,14 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
                 3*W_stride +      // xi, p, dual_linear
                 ncx*nx+ncu*nu + // D, C
                 2*(ncx+ncu) +       // du, dl, cu, cl
+                2*(get_nbx(wrk)+get_nbu(wrk)) + // lbx, ubx, lbu, ubu
                 W_stride*W_stride + // L
                 W_stride*2*N*nu +       // Mu, Meta
                 tmp_size;       // solver_tmp
     wrk->ineq_memory = malloc(
         nfloats*sizeof(f64) +
-        (nc+W_stride)*sizeof(u32) +              // active_set.as_members, xi_sign
+        (get_nbx(wrk)+get_nbu(wrk))*sizeof(u32) + // idxbx, idxbu
+        (nb+nc+W_stride)*sizeof(u32) +              // active_set.constraints, bounds, xi_sign
         W_stride*sizeof(constraint_t)       // active_set.xi2con
     );
     f64* mem = (f64*) wrk->ineq_memory;
@@ -1098,6 +1201,10 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->xi = mem; mem+=W_stride;
     wrk->p = mem; mem+=W_stride;
     wrk->dual_linear = mem; mem+=W_stride;
+    wrk->lbx = mem; mem+=get_nbx(wrk);
+    wrk->ubx = mem; mem+=get_nbx(wrk);
+    wrk->lbu = mem; mem+=get_nbu(wrk);
+    wrk->ubu = mem; mem+=get_nbu(wrk);
     wrk->D = mem; mem+=ncx*nx;
     wrk->C = mem; mem+=ncu*nu;
     wrk->du = mem; mem+=ncx;
@@ -1109,7 +1216,10 @@ void allocate_inequalities_workspace(workspace* wrk, u32* mx, u32* mu) {
     wrk->Meta = mem; mem+=W_stride*N*nu;
     wrk->solver_tmp = mem; mem+=tmp_size;
     unsigned char* vmem = (unsigned char*) mem;
-    wrk->as.as_members = (u32*) vmem; vmem+=nc*sizeof(u32);
+    wrk->as.constraints = (u32*) vmem; vmem+=nc*sizeof(u32);
+    wrk->as.bounds = (u32*) vmem; vmem+=nb*sizeof(u32);
+    wrk->idxbx = (u32*) vmem; vmem+=get_nbx(wrk)*sizeof(u32);
+    wrk->idxbu = (u32*) vmem; vmem+=get_nbu(wrk)*sizeof(u32);
     wrk->xi_sign = (u32*) vmem; vmem+=W_stride*sizeof(u32);
     wrk->as.xi2con = (constraint_t*) vmem; vmem+=W_stride*sizeof(constraint_t);
 }
