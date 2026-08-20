@@ -600,7 +600,7 @@ void get_dual_linear_term(workspace* wrk) {
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         u32 t = wrk->as.xi2con[i].t;
         u32 idx = wrk->as.xi2con[i].idx;
-        u32 is_bound = wrk->as.xi2con[i].idx;
+        u32 is_bound = wrk->as.xi2con[i].is_bound;
         u32 is_state = wrk->as.xi2con[i].is_state;
         u32 is_upper = wrk->as.xi2con[i].is_upper;
         f64 tmp; 
@@ -763,24 +763,28 @@ u32 check_bounds_at_t(workspace* wrk, u32 t, u32 is_state, constraint_t* constr)
     u32* idxb;
     f64 *xu, *lb, *ub, *xu_lqr;
     if (is_state) {
-        idxb = wrk->idxbx;
         nb = wrk->nbx[t];
         cb = wrk->cbx[t];
+        idxb = wrk->idxbx+cb;
         n = wrk->nx;
         xu = wrk->x+t*n+n;
         xu_lqr = wrk->x_lqr+t*n+n;
+        lb = wrk->lbx+cb;
+        ub = wrk->ubx+cb;
     } else {
-        idxb = wrk->idxbu;
         nb = wrk->nbu[t];
         cb = wrk->cbu[t];
+        idxb = wrk->idxbu + cb;
         n = wrk->nu;
         xu = wrk->u+t*n;
         xu_lqr = wrk->u_lqr+t*n;
+        lb = wrk->lbu+cb;
+        ub = wrk->ubu+cb;
     }
 
     for (u32 i=0; i<nb; ++i) {
         if (!is_active(wrk, t, i, 1, is_state)) {
-            f64 v = xu[idxb[i]] - xu_lqr[idxb[i]];
+            f64 v = xu[idxb[i]] + xu_lqr[idxb[i]];
             if (v - ub[i] > ZERO_TOL) {
                 constr->t = t;
                 constr->idx = i;
@@ -820,9 +824,11 @@ void check_primal_feasibility_greedy(workspace* wrk, constraint_t* constr) {
     v0.pa = wrk->u; v1.pa = wrk->eta;
     blasfeo_dvecsc(nu, -1.0, &v0, 0);
     TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu, wrk->rho[0]);
+    if (check_bounds_at_t(wrk, 0, 0, constr)) return;
     if (check_constraints_at_t(wrk, 0, 0, constr)) return;
     v1.pa = wrk->x+nx;
     blasfeo_dgemv_t(nu, nx, 1.0, wrk->B, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+    if (check_bounds_at_t(wrk, 0, 1, constr)) return;
     if (check_constraints_at_t(wrk, 0, 1, constr)) return;
 
     for (u32 t=1; t<N; ++t) {
@@ -884,53 +890,56 @@ void get_most_violated_constraint(workspace* wrk, constraint_t* constr) {
     for (u32 tau=0; tau<wrk->N; ++tau) {
         // Check u bounds at tau
         for (u32 i=0; i<wrk->nbu[tau]; ++i) {
-            if (is_active(wrk, t, i, 1, 0)) continue;
-            tmp = wrk->u[tau*nu+wrk->idxbu[wrk->cbu[tau]+i]] - wrk->ubu[wrk->cbu[tau]+i];
-            if (tmp > max)
+            if (is_active(wrk, tau, i, 1, 0)) continue;
+            dotval = wrk->u[tau*nu+wrk->idxbu[wrk->cbu[tau]+i]] + wrk->u_lqr[tau*nu+wrk->idxbu[wrk->cbu[tau]+i]];
+            tmp = dotval - wrk->ubu[wrk->cbu[tau]+i];
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                     tau, i, 1, 0, 1, tmp);
-            tmp = wrk->lbu[wrk->cbu[tau]+i] - wrk->u[tau*nu+wrk->idxbu[wrk->cbu[tau+i]]];
-            if (tmp > max)
+            tmp = wrk->lbu[wrk->cbu[tau]+i] - dotval;
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                     tau, i, 1, 0, 0, tmp); 
         }
         // Check x bounds at tau
         for (u32 i=0; i<wrk->nbx[tau]; ++i) {
-            if (is_active(wrk, t, i, 1, 1)) continue;
-            tmp = wrk->x[tau*nx+nx+wrk->idxbx[wrk->cbx[tau]+i]] - wrk->ubx[wrk->cbx[tau]+i];
-            if (tmp > max)
+            if (is_active(wrk, tau, i, 1, 1)) continue;
+            dotval = wrk->x[tau*nx+nx+wrk->idxbx[wrk->cbx[tau]+i]] 
+                    + wrk->x_lqr[tau*nx+nx+wrk->idxbx[wrk->cbx[tau]+i]];
+            tmp = dotval - wrk->ubx[wrk->cbx[tau]+i];
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                     tau, i, 1, 1, 1, tmp);
-            tmp = wrk->lbx[wrk->cbx[tau]+i] - wrk->x[tau*nx+nx+wrk->idxbx[wrk->cbx[tau+i]]];
-            if (tmp > max)
+            tmp = wrk->lbx[wrk->cbx[tau]+i] - dotval;
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                     tau, i, 1, 1, 0, tmp); 
         } 
         // Check Cu at tau
         for (u32 i=0; i<wrk->mu[tau]; ++i) {
-            if (is_active(wrk, t, i, 0, 0)) continue;
+            if (is_active(wrk, tau, i, 0, 0)) continue;
             v0.pa = wrk->C+(wrk->cmu[tau]+i)*nu; v1.pa = wrk->u+tau*nu;
             dotval = blasfeo_ddot(nu, &v0, 0, &v1, 0) + wrk->Cu_lqr[wrk->cmu[tau]+i];
             tmp = dotval - wrk->cu[wrk->cmu[tau]+i];
-            if (tmp > max)
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                       tau, i, 0, 0, 1, tmp);
-            tmp = wrk->lbu[wrk->cmu[tau]+i] - dotval;
-            if (tmp > max)
+            tmp = wrk->cl[wrk->cmu[tau]+i] - dotval;
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                       tau, i, 0, 0, 0, tmp);
         }
         // Check Dx at tau
         for (u32 i=0; i<wrk->mx[tau]; ++i) {
-            if (is_active(wrk, t, i, 0, 1)) continue;
+            if (is_active(wrk, tau, i, 0, 1)) continue;
             v0.pa = wrk->D+(wrk->cmx[tau]+i)*nx; v1.pa = wrk->x+tau*nx+nx;
             dotval = blasfeo_ddot(nx, &v0, 0, &v1, 0) + wrk->Dx_lqr[wrk->cmx[tau]+i];
             tmp = dotval - wrk->du[wrk->cmx[tau]+i];
-            if (tmp > max)
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                        tau, i, 0, 1, 1, tmp);
             tmp = wrk->dl[wrk->cmx[tau]+i] - dotval;
-            if (tmp > max)
+            if (tmp > ZERO_TOL && tmp > max)
                 set_maximum_violation(&t, &idx, &is_bound, &is_state, &is_upper, &max,
                                       tau, i, 0, 1, 0, tmp);
         }
@@ -1176,7 +1185,7 @@ void allocate_inequalities_workspace(
     u32 ncu = get_ncu(wrk);
     u32 nc = wrk->nc = ncx + ncu;
     u32 nb = wrk->nb = get_nbx(wrk) + get_nbu(wrk);
-    u32 W_stride = wrk->W_stride = MIN(nc, N*nu+1);
+    u32 W_stride = wrk->W_stride = MIN(nc+nb, N*nu+1);
 
     u32 tmp_size = W_stride;
     u32 nfloats = 2*nc +          // Dx, Cu, Dx_lqr, Cu_lqr
