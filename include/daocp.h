@@ -65,6 +65,14 @@ typedef struct {
     daocp_selection selection;
 } daocp_args;
 
+// DAOCP EXIT STATUS
+typedef enum {
+    DAOCP_SOLVED = 0,
+    DAOCP_INFEASIBLE = 1,
+    DAOCP_MAX_ITER = 2,
+    DAOCP_ILL_CONDITIONED = 3
+} daocp_status;
+
 void daocp_arg_set_default(daocp_args* args);
 void daocp_workspace_memsize(daocp_dims* dims);
 void daocp_workspace_create(daocp_dims* dims, daocp_args* args,
