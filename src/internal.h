@@ -65,8 +65,10 @@ typedef struct {
     f64* Ld;
     f64* Mu;
     f64* Me;
+    u32* xi_sign;
     u32 W_stride;
     u32 nH0;
+    u32 singular;
 
     struct blasfeo_dmat* H;
     struct blasfeo_dvec* h;
@@ -77,6 +79,17 @@ typedef struct {
 } daocp_ws_internal;
 
 
+u32 daocp_check_x0_feasibility(daocp_ws_internal* wrk, daocp_qp* qp);
+void daocp_solve_dual_eqcon_qp(daocp_ws_internal* wrk);
+u32 daocp_is_dual_feasible(f64* p, u32* sign, u32 n);
+u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n);
+void daocp_selection_greedy(daocp_ws_internal* wrk, daocp_qp* qp, daocp_constraint* violated);
+void daocp_selection_most_violated(daocp_ws_internal* wrk, daocp_qp* qp, daocp_constraint* violated);
+void daocp_add_to_working_set(daocp_ws_internal* wrk, daocp_constraint* violated);
+void daocp_remove_from_working_set(daocp_ws_internal* wrk, u32 xi_idx);
+u32 daocp_get_descent_dir(daocp_ws_internal* wrk);
+u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n);
+void daocp_retrieve_sol(daocp_ws_internal* wrk, daocp_sol* sol);
 u32 daocp_global_constraint_idx(daocp_ws_internal* wrk, u32 t, u32 idx, daocp_constraint_type type);
 u32 daocp_is_active(daocp_ws_internal* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_ws_internal* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);

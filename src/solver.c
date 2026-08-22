@@ -1,0 +1,71 @@
+#include <internal.h>
+
+void solve(
+    daocp_args* args, daocp_qp* qp, daocp_workspace* ws,
+    daocp_sol* sol
+) {
+    daocp_ws_internal* wrk = (daocp_ws_internal*) ws->mem;
+    void (*selection_handle)(daocp_qp*, daocp_ws_internal*, daocp_constraint*) = 
+        args->selection == DAOCP_SELECT_GREEDY ? NULL 
+        : NULL;
+    u32 status_set = 0;
+
+    // Check feasibility on x0
+    if (daocp_check_x0_feasibility(wrk, qp)) {
+        wrk->status = DAOCP_INFEASIBLE;
+        wrk->iters = 0;
+        // Set ux to the lqr solution and return
+        for (u32 t=0; t<wrk->dims->N; ++t) {
+            blasfeo_dveccp(wrk->dims->nu[t]+wrk->dims->nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
+            blasfeo_dvecsc(wrk->dims->nb[t]+wrk->dims->ng[t], 0.0, sol->lam+t, 0);
+        }
+        return;
+    }
+
+    for (u32 k=0; k<args->max_iter; ++k) {
+        if (!wrk->singular) {
+            // Solve H_W p = -g_W
+            daocp_solve_dual_eqcon_qp(wrk);
+            if (daocp_is_dual_feasible(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
+                // If p is dual feasible, xi = p
+                memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
+                // Add a primal-violated constraint, if it exists
+                daocp_constraint violated;
+                selection_handle(qp, wrk, &violated);
+                if (violated.t > wrk->dims->N) {
+                    wrk->status = DAOCP_SOLVED;
+                    wrk->iters = k;
+                    status_set = 1;
+                    break;
+                }
+                daocp_add_to_working_set(wrk, &violated); 
+            } else {
+                // Form descent direction
+                for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
+                u32 idx_remove = daocp_take_step(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
+                daocp_remove_from_working_set(wrk, idx_remove);
+            }
+        } else {
+            // Retrieve a descent direction by exploiting infeasibility
+            // of the dual equality constrained problem.
+            if (daocp_get_descent_dir(wrk)) {
+                wrk->status = DAOCP_ILL_CONDITIONED;
+                wrk->iters = k;
+                status_set = 1;
+                break;
+            }
+            // Check for an infeasibility certificate
+            if (daocp_check_infeasibility_from_descent_dir(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
+                wrk->status = DAOCP_INFEASIBLE;
+                wrk->iters = k;
+                status_set = 1;
+                break;
+            }
+            u32 idx_remove = daocp_take_step(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
+            daocp_remove_from_working_set(wrk, idx_remove);
+        }
+    }
+    if (status_set==0) wrk->status = DAOCP_MAX_ITER;
+
+    daocp_retrieve_sol(wrk, sol);
+}

@@ -78,7 +78,7 @@ void daocp_workspace_memsize(daocp_dims* dims);
 void daocp_workspace_create(daocp_dims* dims, daocp_args* args,
                             daocp_workspace* ws, void* memory);
 void daocp_workspace_init(daocp_dims* dims, daocp_qp* qp, daocp_workspace* ws);
-void daocp_solve(daocp_dims* dims, daocp_qp* qp, daocp_workspace* ws, daocp_sol* sol);
+void daocp_solve(daocp_args* args, daocp_qp* qp, daocp_workspace* ws, daocp_sol* sol);
 
 
 #endif
