@@ -1,11 +1,11 @@
 #include <internal.h>
 
 void solve(
-    daocp_args* args, daocp_qp* qp, daocp_workspace* ws,
+    daocp_args* args, daocp_qp* qp, void* ws,
     daocp_sol* sol
 ) {
-    daocp_ws_internal* wrk = (daocp_ws_internal*) ws->mem;
-    void (*selection_handle)(daocp_qp*, daocp_ws_internal*, daocp_constraint*) = 
+    daocp_workspace* wrk = (daocp_workspace*) ws;
+    void (*selection_handle)(daocp_qp*, daocp_workspace*, daocp_constraint*) = 
         args->selection == DAOCP_SELECT_GREEDY ? NULL 
         : NULL;
     u32 status_set = 0;
@@ -15,9 +15,9 @@ void solve(
         wrk->status = DAOCP_INFEASIBLE;
         wrk->iters = 0;
         // Set ux to the lqr solution and return
-        for (u32 t=0; t<wrk->dims->N; ++t) {
-            blasfeo_dveccp(wrk->dims->nu[t]+wrk->dims->nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
-            blasfeo_dvecsc(wrk->dims->nb[t]+wrk->dims->ng[t], 0.0, sol->lam+t, 0);
+        for (u32 t=0; t<qp->dims->N; ++t) {
+            blasfeo_dveccp(qp->dims->nu[t]+qp->dims->nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
+            blasfeo_dvecsc(qp->dims->nbu[t]+qp->dims->nbx[t]+qp->dims->ng[t], 0.0, sol->lam+t, 0);
         }
         return;
     }
@@ -32,13 +32,13 @@ void solve(
                 // Add a primal-violated constraint, if it exists
                 daocp_constraint violated;
                 selection_handle(qp, wrk, &violated);
-                if (violated.t > wrk->dims->N) {
+                if (violated.t > qp->dims->N) {
                     wrk->status = DAOCP_SOLVED;
                     wrk->iters = k;
                     status_set = 1;
                     break;
                 }
-                daocp_add_to_working_set(wrk, &violated); 
+                daocp_add_to_working_set(wrk, qp, &violated); 
             } else {
                 // Form descent direction
                 for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];

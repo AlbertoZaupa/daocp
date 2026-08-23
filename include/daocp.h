@@ -11,14 +11,15 @@ typedef struct {
     u32 N;
     u32* nx;
     u32* nu;
-    u32* nb;
+    u32* nbu;
+    u32* nbx;
     u32* ng;
     u32* ne;
 } daocp_dims;
 
 // QP data in the format accepted by the solver.
 typedef struct {
-    daocp_dims *dim;
+    daocp_dims *dims;
     f64* x0;
     struct blasfeo_dmat* Bt;
     struct blasfeo_dmat* At;
@@ -28,17 +29,18 @@ typedef struct {
     struct blasfeo_dmat* S;
     struct blasfeo_dvec* r;
     struct blasfeo_dvec* q;
-    struct blasfeo_dmat* Cx;
-    struct blasfeo_dmat* Cu;
-    struct blasfeo_dvec* cl;
-    struct blasfeo_dvec* cu;
-    struct blasfeo_dvec* lbu;
-    struct blasfeo_dvec* ubu;
-    struct blasfeo_dvec* lbx;
-    struct blasfeo_dvec* ubx;
-    u32* is_eq;
-    u32* idxbu;
-    u32* idxbx;
+    f64** Cx;
+    f64** Cu;
+    f64** Dx;
+    f64** Du;
+    f64** cl;
+    f64** cu;
+    f64** lbu;
+    f64** ubu;
+    f64** lbx;
+    f64** ubx;
+    u32** idxbu;
+    u32** idxbx;
 } daocp_qp;
 
 // Solution data
@@ -46,12 +48,6 @@ typedef struct {
     struct blasfeo_dvec* ux;
     struct blasfeo_dvec* lam;
 } daocp_sol;
-
-// DAOCP workspace memory
-typedef struct {
-    void* mem;
-    u32 memsize;
-} daocp_workspace;
 
 // Constraint selection heuristic
 typedef enum {
@@ -73,12 +69,10 @@ typedef enum {
     DAOCP_ILL_CONDITIONED = 3
 } daocp_status;
 
-void daocp_arg_set_default(daocp_args* args);
+void daocp_args_set_default(daocp_args* args);
 void daocp_workspace_memsize(daocp_dims* dims);
-void daocp_workspace_create(daocp_dims* dims, daocp_args* args,
-                            daocp_workspace* ws, void* memory);
-void daocp_workspace_init(daocp_dims* dims, daocp_qp* qp, daocp_workspace* ws);
-void daocp_solve(daocp_args* args, daocp_qp* qp, daocp_workspace* ws, daocp_sol* sol);
+void daocp_workspace_init(daocp_dims* dims, daocp_qp* qp, void* ws);
+void daocp_solve(daocp_args* args, daocp_qp* qp, void* ws, daocp_sol* sol);
 
 
 #endif
