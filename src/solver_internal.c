@@ -4,9 +4,9 @@
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
-    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], qp->dims->nx[0]);
+    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], wrk->max_nx);
     for (u32 i=0; i<wrk->nH0; ++i)
-        if (ABS(wrk->tmp1[i]) > ZERO_TOL) return 1;
+        if (DAOCP_ABS(wrk->tmp1[i]) > DAOCP_ZERO_TOL) return 1;
     return 0;
 }
 
@@ -30,7 +30,7 @@ u32 daocp_is_dual_feasible(f64* p, u32* sign, u32 n) {
         Check that all components have the right sign.   
     */
     for (u32 i=0; i<n; ++i) {
-        if ((sign[i] == 0 && p[i] > ZERO_TOL) || (sign[i] == 1 && p[i] < -ZERO_TOL))
+        if ((sign[i] == 0 && p[i] > DAOCP_ZERO_TOL) || (sign[i] == 1 && p[i] < -DAOCP_ZERO_TOL))
             return 0;
     }
     return 1;
@@ -46,8 +46,8 @@ u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n) {
     f64 t = INFINITY;
     u32 argmin = 0;
     for (u32 i=0; i<n; ++i) {
-        if ((xi_sign[i] == 1 && p[i] > -ZERO_TOL) || 
-            (xi_sign[i] == 0 && p[i] < ZERO_TOL)) continue;
+        if ((xi_sign[i] == 1 && p[i] > -DAOCP_ZERO_TOL) || 
+            (xi_sign[i] == 0 && p[i] < DAOCP_ZERO_TOL)) continue;
         
         f64 tau = - xi[i] / p[i];
         if (tau < t) {
@@ -101,8 +101,8 @@ static inline u32 check_bounds_at_t(
         f64 uval = v[idx];
         f64 tmp1 = uval - ub[i];
         f64 tmp2 = lb[i] - uval;
-        if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
-            populate_constraint_struct(constr, t, i, type, tmp1 > ZERO_TOL ? 1 : 0);
+        if (tmp1 > DAOCP_ZERO_TOL || tmp2 > DAOCP_ZERO_TOL) {
+            populate_constraint_struct(constr, t, i, type, tmp1 > DAOCP_ZERO_TOL ? 1 : 0);
             return 1;
         }
     }
@@ -128,8 +128,8 @@ static inline u32 check_constraints_at_t(
         }
         f64 tmp1 = val - ub[i];
         f64 tmp2 = lb[i] - val;
-        if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
-            populate_constraint_struct(constr, t, i, types[i], tmp1 > ZERO_TOL ? 1 : 0);
+        if (tmp1 > DAOCP_ZERO_TOL || tmp2 > DAOCP_ZERO_TOL) {
+            populate_constraint_struct(constr, t, i, types[i], tmp1 > DAOCP_ZERO_TOL ? 1 : 0);
             return 1;
         }
     }
@@ -251,7 +251,7 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
     }
 
     // Find the inactive constraint with the largest violation.
-    f64 max_violation = ZERO_TOL;
+    f64 max_violation = DAOCP_ZERO_TOL;
     violated->t = N+1;
     for (u32 t=0; t<=N; ++t) {
         if (t < N) {
@@ -428,7 +428,7 @@ static void update_cholesky_add(daocp_workspace* wrk) {
     // Diagonal
     wrk->Ld[n_active*wrk->W_stride + n_active] -= 
             daocp_dot(wrk->Ld+n_active*wrk->W_stride, wrk->Ld+n_active*wrk->W_stride, n_active);
-    if (wrk->Ld[n_active*wrk->W_stride + n_active] < ZERO_TOL) {
+    if (wrk->Ld[n_active*wrk->W_stride + n_active] < DAOCP_ZERO_TOL) {
         wrk->singular = 1;
         wrk->Ld[n_active*wrk->W_stride + n_active] = 0.0;
     }
@@ -452,8 +452,8 @@ static void daocp_update_working_set__add(daocp_workspace* wrk, daocp_constraint
     
     // Update max_t, depending on the constraint type
     if (type == DAOCP_BOUND_U || type == DAOCP_ONLY_U || type == DAOCP_MIXED)
-        wrk->as.max_t = MAX(wrk->as.max_t, t);
-    else wrk->as.max_t = MAX(wrk->as.max_t, t-1);
+        wrk->as.max_t = DAOCP_MAX(wrk->as.max_t, t);
+    else wrk->as.max_t = DAOCP_MAX(wrk->as.max_t, t-1);
 }
 
 void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
@@ -500,7 +500,7 @@ static void update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     f64 lii, lii_new, a, b;
     for (u32 i=idx; i<n_active-1; ++i) {
         lii = wrk->Ld[i*W_stride+i];
-        lii_new = sqrt(PW2(lii) + PW2(l[i-idx])); 
+        lii_new = sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx])); 
         wrk->Ld[i*W_stride+i] = lii_new;
         a = l[i-idx] / lii_new;
         b = lii / lii_new;
@@ -539,7 +539,7 @@ static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     wrk->as.max_t = 0;
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         u32 mask = wrk->as.xi2con[i].type == DAOCP_BOUND_X || wrk->as.xi2con[i].type == DAOCP_ONLY_X;
-        wrk->as.max_t = MAX(wrk->as.max_t, wrk->as.xi2con[i].t - mask*1);
+        wrk->as.max_t = DAOCP_MAX(wrk->as.max_t, wrk->as.xi2con[i].t - mask*1);
     }
 }
 
@@ -578,15 +578,15 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk) {
 
     // Enforce p' b < 0.
     f64 dotv = daocp_dot(wrk->p, wrk->dual_linear, n_active);
-    if (dotv >= -ZERO_TOL && dotv <= ZERO_TOL) return 1;
-    if (dotv > ZERO_TOL)
+    if (dotv >= -DAOCP_ZERO_TOL && dotv <= DAOCP_ZERO_TOL) return 1;
+    if (dotv > DAOCP_ZERO_TOL)
         daocp_negate(wrk->p, n_active);
     return 0;
 }
 
 u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n) {
     for (u32 i=0; i<n; ++i)
-        if ((sign[i] == 1 && p[i] < -ZERO_TOL) || (sign[i] == 0 && p[i] > ZERO_TOL)) return 0;
+        if ((sign[i] == 1 && p[i] < -DAOCP_ZERO_TOL) || (sign[i] == 0 && p[i] > DAOCP_ZERO_TOL)) return 0;
 
     return 1; 
 }
@@ -612,4 +612,12 @@ void daocp_pointer_swap(unsigned char** p1, unsigned char** p2) {
     unsigned char* p3 = *p1;
     *p1 = *p2;
     *p2 = p3;
+}
+
+void daocp_compute_prefix_sum(u32* ca, u32* a, u32 n) {
+    u32 sum = 0;
+    for (u32 i=0; i<n; ++i) {
+        ca[i] = sum;
+        sum += a[i];
+    }
 }

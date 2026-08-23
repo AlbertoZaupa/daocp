@@ -4,11 +4,11 @@
 #include <daocp.h>
 #include <string.h>
 
-#define ABS(x) ((x) > 0 ? (x) : -(x))
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
-#define PW2(x) (x)*(x)
-#define ZERO_TOL 1e-12
+#define DAOCP_ABS(x) ((x) > 0 ? (x) : -(x))
+#define DAOCP_MAX(x, y) ((x) > (y) ? (x) : (y))
+#define DAOCP_MIN(x, y) ((x) < (y) ? (x) : (y))
+#define DAOCP_PW2(x) (x)*(x)
+#define DAOCP_ZERO_TOL 1e-12
 
 typedef enum {
     DAOCP_BOUND_X = 0,
@@ -45,6 +45,8 @@ typedef struct {
     struct blasfeo_dmat* Ku;
     struct blasfeo_dmat* Ke;
     struct blasfeo_dvec* ux_lqr;
+    struct blasfeo_dvec* eta_lqr;
+    struct blasfeo_dvec* b;
     f64** u;
     f64** x;
     f64** eta;
@@ -69,6 +71,8 @@ typedef struct {
     u32 nb_tot;
     u32 ng_tot;
     u32 neta;
+    u32 max_nx;
+    u32 max_nu;
 
     f64* xi;
     f64* p;
@@ -84,6 +88,8 @@ typedef struct {
     f64* H;
     f64* h;
     f64* tmp1;
+    f64* GEtmp;
+    f64* ABtmp;
     struct blasfeo_dmat tmp2;
     struct blasfeo_dmat tmp3;
     struct blasfeo_dmat tmp4;
@@ -109,13 +115,17 @@ u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);
 
+// Riccati and lqr routines
+void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp);
+void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
+
 // Linear algebra and various utils
-#define TRSVLQR(vu, ve, Luu, Lue, Lee, nu, rho) { \
+#define DAOCP_TRSVLQR(vu, ve, Luu, Lue, Lee, nu, rho) { \
     blasfeo_dtrsv_lnn(nu, Luu, 0, 0, &vu, 0, &vu, 0); \
     blasfeo_dgemv_n(rho, nu, -1.0, Lue, 0, 0, &vu, 0, 1.0, &ve, 0, &ve, 0); \
     blasfeo_dtrsv_lnn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
 }
-#define TRSVLQR_T(vu, ve, Luu, Lue, Lee, nu, rho) { \
+#define DAOCP_TRSVLQR_T(vu, ve, Luu, Lue, Lee, nu, rho) { \
     blasfeo_dtrsv_ltn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
     blasfeo_dgemv_t(rho, nu, -1.0, Lue, 0, 0, &ve, 0, 1.0, &vu, 0, &vu, 0); \
     blasfeo_dtrsv_ltn(nu, Luu, 0, 0, &vu, 0, &vu, 0); \
@@ -124,8 +134,11 @@ void daocp_trsv(f64* x, f64* L, u32 n, u32 stride);
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
+u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);
 void daocp_negate(f64* v, u32 n);
 f64 daocp_dot(f64* v, f64* w, u32 n);
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2);
+void daocp_compute_prefix_sum(u32* ca, u32* a, u32 n);
 
 #endif

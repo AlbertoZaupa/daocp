@@ -35,6 +35,7 @@ typedef struct {
     f64** Du;
     f64** cl;
     f64** cu;
+    f64** d;
     f64** lbu;
     f64** ubu;
     f64** lbx;
