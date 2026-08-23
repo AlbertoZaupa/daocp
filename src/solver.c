@@ -5,7 +5,7 @@ void solve(
     daocp_sol* sol
 ) {
     daocp_workspace* wrk = (daocp_workspace*) ws;
-    void (*selection_handle)(daocp_qp*, daocp_workspace*, daocp_constraint*) = 
+    void (*selection_handle)(daocp_workspace*, daocp_qp*, daocp_constraint*) = 
         args->selection == DAOCP_SELECT_GREEDY ? daocp_selection_greedy 
         : daocp_selection_most_violated;
     u32 status_set = 0;

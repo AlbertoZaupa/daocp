@@ -41,7 +41,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         daocp_fma_mm_nt(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nu[t], H, ABtmp, neq_x0, nx[t], nx[t+1], nx[t]+nu[t]+1);
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] = h[i];
         for (u32 i=0; i<nx[t+1]; ++i)
-            ABtmp[i] = BLASFEO_DMATEL(qp->BAwt, nu[t]+nx[t], i); 
+            ABtmp[i] = BLASFEO_DMATEL(qp->BAwt+t, nu[t]+nx[t], i); 
         daocp_fms_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, ABtmp, neq_x0, nx[t+1], nx[t]+nu[t]+1);
 
         // Gaussian elimination
@@ -101,7 +101,7 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
     struct blasfeo_dvec* ptmp = &wrk->costate1;
 
     // Initialize costate
-    blasfeo_dveccp(nx[N], qp->RSQrq+N, nx[N], p, 0);
+    blasfeo_drowex(nx[N], 1.0, qp->RSQrq+N, nx[N], 0, p, 0);
 
     // Backward recursion
     for (i32 t=N-1; t>=0; t--) {

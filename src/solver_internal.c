@@ -162,7 +162,7 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
     // First iteration (x0 = 0)
     v0.pa = u[0]; v1.pa = eta[0];
     blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
-    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
+    DAOCP_TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
     if (check_bounds_at_t(wrk, 0, nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
         return;
     if (check_constraints_at_t(wrk, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
@@ -179,7 +179,7 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
         v0.pa = eta[t];
         blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u[t]; v1.pa = eta[t];
-        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
+        DAOCP_TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
         // Check control bounds
         if (check_bounds_at_t(wrk, t, nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated)) 
@@ -225,7 +225,7 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
     struct blasfeo_dvec v1;
     v0.pa = u[0]; v1.pa = eta[0];
     blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
-    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
+    DAOCP_TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
     v1.pa = x[1];
     blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0,
                     &v0, 0, 0.0, &v1, 0, &v1, 0);
@@ -239,7 +239,7 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
         blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0,
                         &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u[t]; v1.pa = eta[t];
-        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
+        DAOCP_TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
         // Propagate state dynamics
         v0.pa = x[t]; v1.pa = x[t+1];
@@ -279,12 +279,12 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
                 u32 idx = idxbx[t][i];
                 if (daocp_is_active(wrk, t, i, DAOCP_BOUND_X)) continue;
 
-                f64 tmp = x[t][idx] - ubx[t][idx];
+                f64 tmp = x[t][idx] - ubx[t][i];
                 if (tmp > max_violation) {
                     max_violation = tmp;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 1);
                 }
-                tmp = lbx[t][idx] - x[t][idx];
+                tmp = lbx[t][i] - x[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 0);
@@ -371,7 +371,7 @@ static void compute_M_row(
             memcpy(Mu+cnu[t], qp->Cu[t]+idx*nu[t], nu[t]*sizeof(f64));
         else *(Mu+cnu[t]+qp->idxbu[t][idx]) = 1.0;
         vu.pa = Mu+cnu[t]; ve.pa = Me+crho[t];
-        TRSVLQR(vu, ve, &wrk->Luu[t], &wrk->Lue[t], &wrk->Lee[t], nu[t], rho[t]);
+        DAOCP_TRSVLQR(vu, ve, &wrk->Luu[t], &wrk->Lue[t], &wrk->Lee[t], nu[t], rho[t]);
         // Add costate contribution
         if (t > 0) {
             blasfeo_dgemv_n(nx[t], nu[t], -1.0, &wrk->Ku[t], 0, 0, &vu, 0, 1.0, p, 0, p, 0);
@@ -385,7 +385,7 @@ static void compute_M_row(
         blasfeo_dgemv_n(nu[tau], nx[tau+1], 1.0, &qp->BAwt[tau], 0, 0, p, 0, 0.0, &vu, 0, &vu, 0);
         // Solve Lu [du; deta] = [B' p; 0]
         ve.pa = Me + crho[tau];
-        TRSVLQR(vu, ve, wrk->Luu+tau, wrk->Lue+tau, wrk->Lee+tau, nu[tau], rho[tau]);
+        DAOCP_TRSVLQR(vu, ve, wrk->Luu+tau, wrk->Lue+tau, wrk->Lee+tau, nu[tau], rho[tau]);
         // p = A[tau]' p - Ku du + Keta deta
         blasfeo_dgemv_n(nx[tau], nx[tau+1], 1.0, qp->BAwt+tau, nu[tau], 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[tau], nu[tau], -1.0, wrk->Ku+tau, 0, 0, &vu, 0, 1.0, ptmp, 0, ptmp, 0);
