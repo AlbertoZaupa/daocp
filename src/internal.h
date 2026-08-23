@@ -2,6 +2,7 @@
 #define INTERNAL_H
 
 #include <daocp.h>
+#include <string.h>
 
 #define ABS(x) ((x) > 0 ? (x) : -(x))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -26,7 +27,7 @@ typedef struct {
 
 typedef struct {
     daocp_constraint* xi2con;
-    u32* constraint_status;
+    u32** constraint_status;
     u32 n_active;
     u32 max_t;
 } daocp_active_set;
@@ -104,7 +105,7 @@ void daocp_remove_from_working_set(daocp_workspace* wrk, u32 xi_idx);
 u32 daocp_get_descent_dir(daocp_workspace* wrk);
 u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n);
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol);
-u32 daocp_global_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);
 

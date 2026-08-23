@@ -1,6 +1,5 @@
 #include <internal.h>
 #include <math.h>
-#include <string.h>
 
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
     // Check H x0 == h
@@ -100,8 +99,8 @@ static inline u32 check_bounds_at_t(
         if (daocp_is_active(wrk, t, i, type)) continue;
         u32 idx = idxb[i];
         f64 uval = v[idx];
-        f64 tmp1 = uval - ub[idx];
-        f64 tmp2 = lb[idx] - uval;
+        f64 tmp1 = uval - ub[i];
+        f64 tmp2 = lb[i] - uval;
         if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
             populate_constraint_struct(constr, t, i, type, tmp1 > ZERO_TOL ? 1 : 0);
             return 1;
@@ -261,12 +260,12 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
                 u32 idx = idxbu[t][i];
                 if (daocp_is_active(wrk, t, i, DAOCP_BOUND_U)) continue;
 
-                f64 tmp = u[t][idx] - ubu[t][idx];
+                f64 tmp = u[t][idx] - ubu[t][i];
                 if (tmp > max_violation) {
                     max_violation = tmp;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 1);
                 }
-                tmp = lbu[t][idx] - u[t][idx];
+                tmp = lbu[t][i] - u[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 0);
@@ -342,7 +341,6 @@ static void compute_M_row(
     u32 idx = constr->idx;
     struct blasfeo_dvec* p = &wrk->costate0;
     struct blasfeo_dvec* ptmp = &wrk->costate1;
-    u32 N = qp->dims->N;
     u32* nx = qp->dims->nx;
     u32* nu = qp->dims->nu;
     u32* rho = wrk->rho;
@@ -359,17 +357,17 @@ static void compute_M_row(
     // FIRST STEP OF THE RECURSION
 
     // Initialize costate
-    if (constr->type == DAOCP_ONLY_X || constr->type == DAOCP_MIXED) {
+    if (type == DAOCP_ONLY_X || type == DAOCP_MIXED) {
         memcpy(p->pa, qp->Cx[t]+idx*nx[t], nx[t]*sizeof(f64));
-    } else if (constr->type == DAOCP_BOUND_X) {
+    } else if (type == DAOCP_BOUND_X) {
         memset(p->pa, 0, nx[t]*sizeof(f64));
         p->pa[qp->idxbx[t][idx]] = 1.0;
     } else {
         memset(p->pa, 0, nx[t]*sizeof(f64));
     }
     // Compute costate-independent feedforwards
-    if (constr->type == DAOCP_BOUND_U || constr->type == DAOCP_ONLY_U || constr->type == DAOCP_MIXED) {
-        if (constr->type != DAOCP_BOUND_U)
+    if (type == DAOCP_BOUND_U || type == DAOCP_ONLY_U || type == DAOCP_MIXED) {
+        if (type != DAOCP_BOUND_U)
             memcpy(Mu+cnu[t], qp->Cu[t]+idx*nu[t], nu[t]*sizeof(f64));
         else *(Mu+cnu[t]+qp->idxbu[t][idx]) = 1.0;
         vu.pa = Mu+cnu[t]; ve.pa = Me+crho[t];
@@ -403,7 +401,6 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
         2) Compute their signed products with existing rows.
     */
     u32 n_active = wrk->as.n_active;
-    u32 N = qp->dims->N;
     u32* nu = qp->dims->nu;
 
     compute_M_row(wrk, qp, constr, n_active);
@@ -524,7 +521,6 @@ static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     u32 t = wrk->as.xi2con[xi_idx].t;
     u32 idx = wrk->as.xi2con[xi_idx].idx;
     daocp_constraint_type type = wrk->as.xi2con[xi_idx].type;
-    u32 is_upper = wrk->as.xi2con[xi_idx].is_upper;
 
     // Update (xi_idx -> constraint info) map.
     for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i) 
@@ -595,8 +591,8 @@ u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n) {
     return 1; 
 }
 
-u32 daocp_global_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
-    u32 base = wrk->cbx[t]+wrk->cbu[t]+wrk->cg[t] + idx;
+u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
+    u32 base = idx;
     u32 flag = type != DAOCP_BOUND_U;
     base += flag * wrk->dims->nbu[t];
     flag = flag && (type != DAOCP_BOUND_X);
@@ -605,11 +601,11 @@ u32 daocp_global_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_cons
 }
 
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
-    return wrk->as.constraint_status[daocp_global_constraint_idx(wrk, t, idx, type)];
+    return wrk->as.constraint_status[t][daocp_constraint_idx(wrk, t, idx, type)];
 }
 
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status) {
-    wrk->as.constraint_status[daocp_global_constraint_idx(wrk, t, idx, type)] = status;
+    wrk->as.constraint_status[t][daocp_constraint_idx(wrk, t, idx, type)] = status;
 }
 
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2) {

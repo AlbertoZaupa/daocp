@@ -6,8 +6,8 @@ void solve(
 ) {
     daocp_workspace* wrk = (daocp_workspace*) ws;
     void (*selection_handle)(daocp_qp*, daocp_workspace*, daocp_constraint*) = 
-        args->selection == DAOCP_SELECT_GREEDY ? NULL 
-        : NULL;
+        args->selection == DAOCP_SELECT_GREEDY ? daocp_selection_greedy 
+        : daocp_selection_most_violated;
     u32 status_set = 0;
 
     // Check feasibility on x0
@@ -19,6 +19,8 @@ void solve(
             blasfeo_dveccp(qp->dims->nu[t]+qp->dims->nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
             blasfeo_dvecsc(qp->dims->nbu[t]+qp->dims->nbx[t]+qp->dims->ng[t], 0.0, sol->lam+t, 0);
         }
+        blasfeo_dveccp(qp->dims->nx[qp->dims->N], wrk->ux_lqr+qp->dims->N, 0, sol->ux+qp->dims->N, 0);
+        blasfeo_dvecsc(qp->dims->nbx[qp->dims->N]+qp->dims->ng[qp->dims->N], 0.0, sol->lam+qp->dims->N, 0);
         return;
     }
 
@@ -65,7 +67,10 @@ void solve(
             daocp_remove_from_working_set(wrk, idx_remove);
         }
     }
-    if (status_set==0) wrk->status = DAOCP_MAX_ITER;
+    if (status_set==0) {
+        wrk->status = DAOCP_MAX_ITER;
+        wrk->iters = args->max_iter;
+    }
 
     daocp_retrieve_sol(wrk, sol);
 }
