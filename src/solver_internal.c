@@ -4,7 +4,7 @@
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
-    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], wrk->max_nx);
+    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], qp->dims->nx[0]);
     for (u32 i=0; i<wrk->nH0; ++i)
         if (DAOCP_ABS(wrk->tmp1[i]) > DAOCP_ZERO_TOL) return 1;
     return 0;
@@ -168,7 +168,7 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
     if (check_constraints_at_t(wrk, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
     // State evolution
     v1.pa = x[1];
-    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->Bt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
     if (check_bounds_at_t(wrk, 1, qp->dims->nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
         return;
 
@@ -190,9 +190,9 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
 
         // Propagate state dynamics
         v0.pa = x[t]; v1.pa = x[t+1];
-        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->At+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
         v0.pa = u[t];
-        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state bounds
         if (check_bounds_at_t(wrk, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated)) 
@@ -227,7 +227,7 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
     blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
     TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
     v1.pa = x[1];
-    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->Bt[0], 0, 0,
+    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0,
                     &v0, 0, 0.0, &v1, 0, &v1, 0);
 
     for (u32 t=1; t<N; ++t) {
@@ -243,10 +243,10 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
 
         // Propagate state dynamics
         v0.pa = x[t]; v1.pa = x[t+1];
-        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->At+t, 0, 0,
+        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0,
                         &v0, 0, 0.0, &v1, 0, &v1, 0);
         v0.pa = u[t];
-        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0,
+        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0,
                         &v0, 0, 1.0, &v1, 0, &v1, 0);
     }
 
@@ -382,12 +382,12 @@ static void compute_M_row(
     for (i32 tau=t-1; tau>=0; --tau) {
         // Compute B' p
         vu.pa = Mu + cnu[tau]; 
-        blasfeo_dgemv_n(nu[tau], nx[tau+1], 1.0, &qp->Bt[tau], 0, 0, p, 0, 0.0, &vu, 0, &vu, 0);
+        blasfeo_dgemv_n(nu[tau], nx[tau+1], 1.0, &qp->BAwt[tau], 0, 0, p, 0, 0.0, &vu, 0, &vu, 0);
         // Solve Lu [du; deta] = [B' p; 0]
         ve.pa = Me + crho[tau];
         TRSVLQR(vu, ve, wrk->Luu+tau, wrk->Lue+tau, wrk->Lee+tau, nu[tau], rho[tau]);
         // p = A[tau]' p - Ku du + Keta deta
-        blasfeo_dgemv_n(nx[tau], nx[tau+1], 1.0, qp->At+tau, 0, 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
+        blasfeo_dgemv_n(nx[tau], nx[tau+1], 1.0, qp->BAwt+tau, nu[tau], 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[tau], nu[tau], -1.0, wrk->Ku+tau, 0, 0, &vu, 0, 1.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[tau], rho[tau], 1.0, wrk->Ke+tau, 0, 0, &ve, 0, 1.0, ptmp, 0, ptmp, 0);
         daocp_pointer_swap((unsigned char**) &p, (unsigned char**) &ptmp);

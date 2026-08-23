@@ -1,5 +1,6 @@
 #include <internal.h>
 #include <blasfeo.h>
+#define DAOCP_GE_ZERO_TOL 1e-7
 
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride) {
     for (u32 i=0; i<n; ++i) {
@@ -39,7 +40,7 @@ void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride)
     for (u32 i=0; i<nr; ++i)
         for (u32 j=0; j<nc; ++j) {
             v0.pa = A + i*k; v1.pa = B + j*k;
-            C[i*ostride + j] -= blasfeo_ddot(k, &v0, 0, &v1, 0);
+            C[i*ostride + j] += blasfeo_ddot(k, &v0, 0, &v1, 0);
         }
 }
 
@@ -49,9 +50,9 @@ u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 
         if (rho == R) break;
         // Find pivot
         u32 pi = rho-1;
-        f64 p = 0;
+        f64 p = DAOCP_GE_ZERO_TOL;
         for (u32 j=rho; j<nr; ++j)
-            if (ABS(A[j*nctot+i]) > ABS(p)) {
+            if (DAOCP_ABS(A[j*nctot+i]) > DAOCP_ABS(p)) {
                 pi = j;
                 p = A[j*nctot+i];
             }

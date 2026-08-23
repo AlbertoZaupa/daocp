@@ -59,11 +59,7 @@ typedef struct {
     f64** ug_wrk;
     
     daocp_constraint_type** contypes; 
-    u32* cnx;
     u32* cnu;
-    u32* cbx;
-    u32* cbu;
-    u32* cg;
     u32* rho;
     u32* crho;
     u32 nx_tot;
@@ -71,8 +67,6 @@ typedef struct {
     u32 nb_tot;
     u32 ng_tot;
     u32 neta;
-    u32 max_nx;
-    u32 max_nu;
 
     f64* xi;
     f64* p;

@@ -21,14 +21,8 @@ typedef struct {
 typedef struct {
     daocp_dims *dims;
     f64* x0;
-    struct blasfeo_dmat* Bt;
-    struct blasfeo_dmat* At;
-    struct blasfeo_dvec* w;
-    struct blasfeo_dmat* R;
-    struct blasfeo_dmat* Q;
-    struct blasfeo_dmat* S;
-    struct blasfeo_dvec* r;
-    struct blasfeo_dvec* q;
+    struct blasfeo_dmat* BAwt;
+    struct blasfeo_dmat* RSQrq;
     f64** Cx;
     f64** Cu;
     f64** Dx;

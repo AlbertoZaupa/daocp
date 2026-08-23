@@ -12,7 +12,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
     f64** Dx = qp->Dx; f64** Du = qp->Du;
 
     // Initialize recursion
-    blasfeo_dgecp(nx[N], nx[N], qp->Q+N-1, 0, 0, wrk->P+N-1, 0, 0);
+    blasfeo_dgecp(nx[N], nx[N], qp->RSQrq+N, 0, 0, wrk->P+N-1, 0, 0);
     u32 neq_x0 = qp->dims->ne[N];
     f64* tmp = H;
     for (u32 i=0; i<neq_x0; ++i) {
@@ -23,8 +23,8 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
 
     for (i32 t=N-1; t>=0; t--) {
         // Compute Lu00 = chol(R + B'PB)
-        blasfeo_dgemm_nt(nu[t], nx[t+1], nx[t+1], 1.0, qp->Bt+t, 0, 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
-        blasfeo_dsyrk_dpotrf_ln(nu[t], nx[t+1], tmp1, 0, 0, qp->Bt+t, 0, 0, qp->R+t, 0, 0, wrk->Luu+t, 0, 0); 
+        blasfeo_dgemm_nt(nu[t], nx[t+1], nx[t+1], 1.0, qp->BAwt+t, 0, 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
+        blasfeo_dsyrk_dpotrf_ln(nu[t], nx[t+1], tmp1, 0, 0, qp->BAwt+t, 0, 0, qp->RSQrq+t, 0, 0, wrk->Luu+t, 0, 0); 
 
         /* 
             Gaussian elimination to propagate constraints
@@ -35,12 +35,14 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         for (u32 i=0; i<ne[t]; ++i) memcpy(GEtmp+i*(nx[t]+nu[t]+1), Du[t]+i*nu[t], nu[t]*sizeof(f64));
         for (u32 i=0; i<ne[t]; ++i) memcpy(GEtmp+i*(nx[t]+nu[t]+1)+nu[t], Dx[t]+i*nx[t], nx[t]*sizeof(f64));
         for (u32 i=0; i<ne[t]; ++i) GEtmp[i*(nx[t]+nu[t]+1)+nx[t]+nu[t]] = qp->d[t][i];
-        blasfeo_unpack_tran_dmat(nu[t], nx[t+1], qp->Bt+t, 0, 0, ABtmp, nx[t+1]);
+        blasfeo_unpack_tran_dmat(nu[t], nx[t+1], qp->BAwt+t, 0, 0, ABtmp, nx[t+1]);
         daocp_fma_mm_nt(GEtmp+ne[t]*(nx[t]+nu[t]+1), H, ABtmp, neq_x0, nu[t], nx[t+1], nx[t]+nu[t]+1);
-        blasfeo_unpack_tran_dmat(nx[t], nx[t+1], qp->At+t, 0, 0, ABtmp, nx[t+1]);
+        blasfeo_unpack_tran_dmat(nx[t], nx[t+1], qp->BAwt+t, nu[t], 0, ABtmp, nx[t+1]);
         daocp_fma_mm_nt(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nu[t], H, ABtmp, neq_x0, nx[t], nx[t+1], nx[t]+nu[t]+1);
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] = h[i];
-        daocp_fms_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, qp->w[t].pa, neq_x0, nx[t+1], nx[t]+nu[t]+1);
+        for (u32 i=0; i<nx[t+1]; ++i)
+            ABtmp[i] = BLASFEO_DMATEL(qp->BAwt, nu[t]+nx[t], i); 
+        daocp_fms_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, ABtmp, neq_x0, nx[t+1], nx[t]+nu[t]+1);
 
         // Gaussian elimination
         u32 rho = wrk->rho[t] = daocp_gaussian_elimination(GEtmp, GEtmp + (ne[t]+neq_x0)*(nx[t]+nu[t]+1), ne[t]+neq_x0, nu[t], nx[t]+nu[t]+1, nu[t]);
@@ -66,7 +68,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         */
 
         // Compute K0 = (A'PB + S')Lu00^{-T}
-        blasfeo_dgemm_nt(nx[t], nu[t], nx[t+1], 1.0, qp->At+t, 0, 0, tmp1, 0, 0, 1.0, qp->S+t, 0, 0, wrk->Ku+t, 0, 0);
+        blasfeo_dgemm_nt(nx[t], nu[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, tmp1, 0, 0, 1.0, qp->RSQrq+t, nu[t], 0, wrk->Ku+t, 0, 0);
         blasfeo_dtrsm_rltn(nx[t], nu[t], 1.0, wrk->Luu+t, 0, 0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0);
         // Compute K1 = (M' - K0 Lu01')Lu11^{-T}
         blasfeo_pack_dmat(nx[t], rho, GEtmp+nu[t], nx[t]+nu[t]+1, wrk->Ke+t, 0, 0);
@@ -77,8 +79,8 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         /*
             Update P = Q + A'PA - Ku Ku' + Keta Keta'
         */
-        blasfeo_dgemm_nt(nx[t], nx[t], nx[t+1], 1.0, qp->At+t, 0, 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
-        blasfeo_dsyrk_ln(nx[t], nx[t+1], 1.0, tmp1, 0, 0, qp->At+t, 0, 0, 1.0, qp->Q+t-1, 0, 0, wrk->P+t-1, 0, 0);
+        blasfeo_dgemm_nt(nx[t], nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
+        blasfeo_dsyrk_ln(nx[t], nx[t+1], 1.0, tmp1, 0, 0, qp->BAwt+t, nu[t], 0, 1.0, qp->RSQrq+t, nu[t], nu[t], wrk->P+t-1, 0, 0);
         blasfeo_dsyrk_ln(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
         blasfeo_dsyrk_ln(nx[t], rho, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
         blasfeo_dtrtr_l(nx[t], wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
@@ -99,7 +101,7 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
     struct blasfeo_dvec* ptmp = &wrk->costate1;
 
     // Initialize costate
-    blasfeo_dveccp(nx[N], qp->q+N, 0, p, 0);
+    blasfeo_dveccp(nx[N], qp->RSQrq+N, nx[N], p, 0);
 
     // Backward recursion
     for (i32 t=N-1; t>=0; t--) {
@@ -107,9 +109,10 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
             Solve:
             [Luu 0; Lue Lee][du; deta] = [r+B'(p+Pw); -b]
         */
-        
-        blasfeo_dsymv_l(nx[t+1], 1.0, wrk->P+t, 0, 0, &qp->w[t], 0, 1.0, p, 0, p, 0);
-        blasfeo_dgemv_n(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0, p, 0, 1.0, &qp->r[t], 0, &wrk->ux_lqr[t], 0);
+        blasfeo_drowex(nx[t+1], 1.0, &qp->BAwt[t], nu[t]+nx[t], 0, ptmp, 0);
+        blasfeo_dsymv_l(nx[t+1], 1.0, wrk->P+t, 0, 0, ptmp, 0, 1.0, p, 0, p, 0);
+        blasfeo_drowex(nu[t], 1.0, &qp->RSQrq[t], nu[t]+nx[t], 0, ptmp, 0);
+        blasfeo_dgemv_n(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0, p, 0, 1.0, ptmp, 0, &wrk->ux_lqr[t], 0);
         blasfeo_dveccp(rho[t], &wrk->b[t], 0, &wrk->eta_lqr[t], 0);
         DAOCP_TRSVLQR(wrk->ux_lqr[t], wrk->eta_lqr[t], wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
@@ -117,13 +120,15 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
         /*
             Compute p = A' (p + Pw) - Ku du + Keta deta + q 
         */
-        blasfeo_dgemv_n(nx[t], nx[t], 1.0, qp->At+t, 0, 0, p, 0, 1.0, &qp->q[t], 0, ptmp, 0);
+        blasfeo_drowex(nx[t], 1.0, &qp->RSQrq[t], nu[t]+nx[t], nu[t], ptmp, 0);
+        blasfeo_dgemv_n(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, p, 0, 1.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, &wrk->ux_lqr[t], 0, 1.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &wrk->eta_lqr[t], 0, 1.0, ptmp, 0, ptmp, 0);
         daocp_pointer_swap((unsigned char**)&p, (unsigned char**)&ptmp);
     }
 
     // Forward recursion
+    memcpy(wrk->ux_lqr[0].pa+nu[0], qp->x0, nx[0]*sizeof(f64));
     for (u32 t=0; t<N; ++t) {
         /*
             [Luu' Lue'; 0 Lee'][u; eta] = [-Ku'x - du; Keta'x0 + deta]
@@ -135,8 +140,9 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
         /*
             x = Ax + Bu + w
         */
-        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0, &wrk->ux_lqr[t], 0, 1.0, &qp->w[t], 0, &wrk->ux_lqr[t+1], nu[t+1]);
-        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->At+t, 0, 0, &wrk->ux_lqr[t], nx[t], 1.0, &wrk->ux_lqr[t+1], nx[t+1], &wrk->ux_lqr[t+1], nx[t+1]);
+        blasfeo_drowex(nx[t+1], 1.0, &qp->BAwt[t], nu[t]+nx[t], 0, &wrk->ux_lqr[t+1], nu[t+1]);
+        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0, &wrk->ux_lqr[t], 0, 1.0, &wrk->ux_lqr[t+1], nu[t+1], &wrk->ux_lqr[t+1], nu[t+1]);
+        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, &wrk->ux_lqr[t], nu[t], 1.0, &wrk->ux_lqr[t+1], nu[t+1], &wrk->ux_lqr[t+1], nu[t+1]);
     }
 
     // Evaluate constraints and adjust right/left-hand sides.
