@@ -1,12 +1,13 @@
 #include <internal.h>
 #include <math.h>
+#include <string.h>
 
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
     // Check H x0 == h
-    blasfeo_dgemv_n(wrk->nH0, qp->dims->nx[0], -1.0, &wrk->H, 0, 0,
-                qp->x0, 0, 1.0, &wrk->h, 0, &wrk->tmp5, 0);
+    memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
+    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], qp->dims->nx[0]);
     for (u32 i=0; i<wrk->nH0; ++i)
-        if (ABS(wrk->tmp5.pa[i] - wrk->h.pa[i]) > ZERO_TOL) return 1;
+        if (ABS(wrk->tmp1[i]) > ZERO_TOL) return 1;
     return 0;
 }
 
@@ -89,14 +90,20 @@ static inline void populate_constraint_struct(daocp_constraint* constr, u32 t, u
     constr->type = type;
 }
 
-static inline u32 check_bounds_at_t(u32 nb, u32* idxb, f64* v, f64* lb, f64* ub, u32 is_state, daocp_constraint* constr) {
+static inline u32 check_bounds_at_t(
+    daocp_workspace* wrk, u32 t, u32 nb, u32* idxb,
+    f64* v, f64* lb, f64* ub, u32 is_state, 
+    daocp_constraint* constr
+) {
+    daocp_constraint_type type = is_state ? DAOCP_BOUND_X : DAOCP_BOUND_U;
     for (u32 i=0; i<nb; ++i) {
+        if (daocp_is_active(wrk, t, i, type)) continue;
         u32 idx = idxb[i];
         f64 uval = v[idx];
         f64 tmp1 = uval - ub[idx];
         f64 tmp2 = lb[idx] - uval;
         if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
-            populate_constraint_struct(constr, 0, idx, is_state? DAOCP_BOUND_X : DAOCP_BOUND_U, tmp1 > ZERO_TOL ? 1 : 0);
+            populate_constraint_struct(constr, t, i, type, tmp1 > ZERO_TOL ? 1 : 0);
             return 1;
         }
     }
@@ -104,25 +111,26 @@ static inline u32 check_bounds_at_t(u32 nb, u32* idxb, f64* v, f64* lb, f64* ub,
 }
 
 static inline u32 check_constraints_at_t(
-    u32 nc, u32 nx, u32 nu, daocp_constraint_type* types, 
-    f64* Cx, f64* Cu, f64* x, f64* u, f64* lb, 
-    f64* ub, daocp_constraint* constr
+    daocp_workspace* wrk, u32 t, u32 nc, u32 nx, u32 nu, 
+    daocp_constraint_type* types, f64* Cx, f64* Cu, 
+    f64* x, f64* u, f64* lb, f64* ub, daocp_constraint* constr
 ) {
     struct blasfeo_dvec v0, v1;
     for (u32 i=0; i<nc; ++i) {
+        if (daocp_is_active(wrk, t, i, types[i])) continue;
         f64 val = 0;
         if (types[i] == DAOCP_ONLY_U || types[i] == DAOCP_MIXED) {
             v0.pa = Cu+i*nu; v1.pa = u;
-            val = blasfeo_ddot(nu, &v0, 0, &v1, 0);
+            val += blasfeo_ddot(nu, &v0, 0, &v1, 0);
         }
         if (types[i] == DAOCP_ONLY_X || types[i] == DAOCP_MIXED) {
-            v0.pa = Cx+i*nu; v1.pa = x;
-            val = blasfeo_ddot(nx, &v0, 0, &v1, 0);
+            v0.pa = Cx+i*nx; v1.pa = x;
+            val += blasfeo_ddot(nx, &v0, 0, &v1, 0);
         }
         f64 tmp1 = val - ub[i];
         f64 tmp2 = lb[i] - val;
         if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
-            populate_constraint_struct(constr, 0, i, types[i], tmp1 > ZERO_TOL ? 1 : 0);
+            populate_constraint_struct(constr, t, i, types[i], tmp1 > ZERO_TOL ? 1 : 0);
             return 1;
         }
     }
@@ -154,15 +162,15 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
 
     // First iteration (x0 = 0)
     v0.pa = u[0]; v1.pa = eta[0];
-    blasfeo_dvecsc(nu, -1.0, &v0, 0);
+    blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
     TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
-    if (check_bounds_at_t(nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
+    if (check_bounds_at_t(wrk, 0, nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
         return;
-    if (check_constraints_at_t(ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
+    if (check_constraints_at_t(wrk, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
     // State evolution
     v1.pa = x[1];
     blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->Bt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-    if (check_bounds_at_t(qp->dims->nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
+    if (check_bounds_at_t(wrk, 1, qp->dims->nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
         return;
 
     for (u32 t=1; t<N; ++t) {
@@ -175,25 +183,25 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
         TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
         // Check control bounds
-        if (check_bounds_at_t(nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated)) 
+        if (check_bounds_at_t(wrk, t, nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated)) 
             return;
         // Check constraints at t
-        if (check_constraints_at_t(ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated)) 
+        if (check_constraints_at_t(wrk, t, ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated)) 
             return; 
 
         // Propagate state dynamics
         v0.pa = x[t]; v1.pa = x[t+1];
-        blasfeo_dgemv_t(nx[t], nx[t], 1.0, qp->At+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->At+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
         v0.pa = u[t];
-        blasfeo_dgemv_t(nu, nx, 1.0, qp->Bt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state bounds
-        if (check_bounds_at_t(nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated)) 
+        if (check_bounds_at_t(wrk, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated)) 
             return;
     }
 
     // Check constraints on terminal state
-    check_constraints_at_t(ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
+    check_constraints_at_t(wrk, N, ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
 }
 
 void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
@@ -251,17 +259,17 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
             // Check control bounds
             for (u32 i=0; i<nbu[t]; ++i) {
                 u32 idx = idxbu[t][i];
-                if (daocp_is_active(wrk, t, idx, DAOCP_BOUND_U)) continue;
+                if (daocp_is_active(wrk, t, i, DAOCP_BOUND_U)) continue;
 
                 f64 tmp = u[t][idx] - ubu[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
-                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_U, 1);
+                    populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 1);
                 }
                 tmp = lbu[t][idx] - u[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
-                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_U, 0);
+                    populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 0);
                 }
             }
         }
@@ -270,17 +278,17 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
         if (t > 0) {
             for (u32 i=0; i<nbx[t]; ++i) {
                 u32 idx = idxbx[t][i];
-                if (daocp_is_active(wrk, t, idx, DAOCP_BOUND_X)) continue;
+                if (daocp_is_active(wrk, t, i, DAOCP_BOUND_X)) continue;
 
                 f64 tmp = x[t][idx] - ubx[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
-                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_X, 1);
+                    populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 1);
                 }
                 tmp = lbx[t][idx] - x[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
-                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_X, 0);
+                    populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 0);
                 }
             }
         }
@@ -355,11 +363,15 @@ static void compute_M_row(
         memcpy(p->pa, qp->Cx[t]+idx*nx[t], nx[t]*sizeof(f64));
     } else if (constr->type == DAOCP_BOUND_X) {
         memset(p->pa, 0, nx[t]*sizeof(f64));
-        p->pa[idx] = 1.0;
+        p->pa[qp->idxbx[t][idx]] = 1.0;
+    } else {
+        memset(p->pa, 0, nx[t]*sizeof(f64));
     }
     // Compute costate-independent feedforwards
-    if (constr->type == DAOCP_ONLY_U || constr->type == DAOCP_MIXED) {
-        memcpy(Mu+cnu[t], qp->Cu[t]+idx*nu[t], nu[t]*sizeof(f64));
+    if (constr->type == DAOCP_BOUND_U || constr->type == DAOCP_ONLY_U || constr->type == DAOCP_MIXED) {
+        if (constr->type != DAOCP_BOUND_U)
+            memcpy(Mu+cnu[t], qp->Cu[t]+idx*nu[t], nu[t]*sizeof(f64));
+        else *(Mu+cnu[t]+qp->idxbu[t][idx]) = 1.0;
         vu.pa = Mu+cnu[t]; ve.pa = Me+crho[t];
         TRSVLQR(vu, ve, &wrk->Luu[t], &wrk->Lue[t], &wrk->Lee[t], nu[t], rho[t]);
         // Add costate contribution
@@ -372,14 +384,14 @@ static void compute_M_row(
     for (i32 tau=t-1; tau>=0; --tau) {
         // Compute B' p
         vu.pa = Mu + cnu[tau]; 
-        blasfeo_dgemv_n(nu[tau], nx[tau], 1.0, &qp->Bt[tau], 0, 0, p, 0, 0.0, &vu, 0, &vu, 0);
+        blasfeo_dgemv_n(nu[tau], nx[tau+1], 1.0, &qp->Bt[tau], 0, 0, p, 0, 0.0, &vu, 0, &vu, 0);
         // Solve Lu [du; deta] = [B' p; 0]
         ve.pa = Me + crho[tau];
         TRSVLQR(vu, ve, wrk->Luu+tau, wrk->Lue+tau, wrk->Lee+tau, nu[tau], rho[tau]);
         // p = A[tau]' p - Ku du + Keta deta
-        blasfeo_dgemv_n(nx[tau], nx[tau], 1.0, qp->At+tau, 0, 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
+        blasfeo_dgemv_n(nx[tau], nx[tau+1], 1.0, qp->At+tau, 0, 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[tau], nu[tau], -1.0, wrk->Ku+tau, 0, 0, &vu, 0, 1.0, ptmp, 0, ptmp, 0);
-        blasfeo_dgemv_n(nx[tau], rho[tau], 1.0, wrk->Ke+tau, 0, 0, &ve, 0, 1.0, &ptmp, 0, &ptmp, 0);
+        blasfeo_dgemv_n(nx[tau], rho[tau], 1.0, wrk->Ke+tau, 0, 0, &ve, 0, 1.0, ptmp, 0, ptmp, 0);
         daocp_pointer_swap((unsigned char**) &p, (unsigned char**) &ptmp);
     }
 }
@@ -412,6 +424,20 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
                     - blasfeo_ddot(wrk->neta, &ve, 0, &ve, 0);
 }
 
+static void update_cholesky_add(daocp_workspace* wrk) {
+    u32 n_active = wrk->as.n_active;
+    // Solve
+    daocp_trsv(wrk->Ld + n_active*wrk->W_stride, wrk->Ld, n_active, wrk->W_stride);
+    // Diagonal
+    wrk->Ld[n_active*wrk->W_stride + n_active] -= 
+            daocp_dot(wrk->Ld+n_active*wrk->W_stride, wrk->Ld+n_active*wrk->W_stride, n_active);
+    if (wrk->Ld[n_active*wrk->W_stride + n_active] < ZERO_TOL) {
+        wrk->singular = 1;
+        wrk->Ld[n_active*wrk->W_stride + n_active] = 0.0;
+    }
+    wrk->Ld[n_active*wrk->W_stride + n_active] = sqrt(wrk->Ld[n_active*wrk->W_stride + n_active]);
+}
+
 static void daocp_update_working_set__add(daocp_workspace* wrk, daocp_constraint* constr) {
     u32 t = constr->t;
     u32 idx = constr->idx;
@@ -441,23 +467,23 @@ void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constrai
     
     // Update cholesky factorization
     compute_hessian_row(wrk, qp, violated);
-    update_dH_chol_add(wrk);
+    update_cholesky_add(wrk);
 
     // Update dual linear term
     f64 tmp;
     if (type == DAOCP_BOUND_X)
-        tmp = (is_upper ? wrk->ubx_wrk : wrk->lbx_wrk)[wrk->cbx[t] + idx];
+        tmp = (is_upper ? wrk->ubx_wrk : wrk->lbx_wrk)[t][idx];
     else if (type == DAOCP_BOUND_U)
-        tmp = (is_upper ? wrk->ubu_wrk : wrk->lbu_wrk)[wrk->cbu[t] + idx];
+        tmp = (is_upper ? wrk->ubu_wrk : wrk->lbu_wrk)[t][idx];
     else
-        tmp = (is_upper ? wrk->ug_wrk : wrk->lg_wrk)[wrk->cg[t] + idx];
+        tmp = (is_upper ? wrk->ug_wrk : wrk->lg_wrk)[t][idx];
     wrk->dual_linear[wrk->as.n_active] = tmp;
 
     // Update working set data structures
     daocp_update_working_set__add(wrk, violated);
 }
 
-static update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
+static void update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     u32 n_active = wrk->as.n_active;
     u32 W_stride = wrk->W_stride;
     f64* l = wrk->Ld + n_active*W_stride;
@@ -493,7 +519,7 @@ static update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     wrk->singular = 0;
 }
 
-static daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
+static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     // Retrieve constraint info.
     u32 t = wrk->as.xi2con[xi_idx].t;
     u32 idx = wrk->as.xi2con[xi_idx].idx;
@@ -523,7 +549,7 @@ static daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
 
 void daocp_remove_from_working_set(daocp_workspace* wrk, u32 xi_idx) {
     // Update cholesky of dH
-    update_dH_chol_remove(wrk, xi_idx);
+    update_cholesky_remove(wrk, xi_idx);
 
     // Update linear term
     for (u32 i=xi_idx+1; i<wrk->as.n_active; ++i)
@@ -559,6 +585,7 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk) {
     if (dotv >= -ZERO_TOL && dotv <= ZERO_TOL) return 1;
     if (dotv > ZERO_TOL)
         daocp_negate(wrk->p, n_active);
+    return 0;
 }
 
 u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n) {
@@ -582,7 +609,7 @@ u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type 
 }
 
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status) {
-    wrk->as.constraint_status[daocp_global_constraint_idx(wrk, t, idx, type)];
+    wrk->as.constraint_status[daocp_global_constraint_idx(wrk, t, idx, type)] = status;
 }
 
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2) {

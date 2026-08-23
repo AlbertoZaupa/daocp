@@ -3,9 +3,10 @@
 
 #include <daocp.h>
 
-#define ABS(x) (x > 0 ? x : -(x))
-#define MAX(x, y) (x > y ? x : y)
-#define MIN(x, y) (x < y ? x : y)
+#define ABS(x) ((x) > 0 ? (x) : -(x))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define PW2(x) (x)*(x)
 #define ZERO_TOL 1e-12
 
 typedef enum {
@@ -79,9 +80,9 @@ typedef struct {
     u32 nH0;
     u32 singular;
 
-    struct blasfeo_dmat H;
-    struct blasfeo_dvec h;
-    struct blasfeo_dmat tmp1;
+    f64* H;
+    f64* h;
+    f64* tmp1;
     struct blasfeo_dmat tmp2;
     struct blasfeo_dmat tmp3;
     struct blasfeo_dmat tmp4;
@@ -122,6 +123,8 @@ void daocp_trsv(f64* x, f64* L, u32 n, u32 stride);
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void daocp_negate(f64* v, u32 n);
+f64 daocp_dot(f64* v, f64* w, u32 n);
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2);
 
 #endif
