@@ -43,14 +43,18 @@ typedef struct {
     struct blasfeo_dmat* Ku;
     struct blasfeo_dmat* Ke;
     struct blasfeo_dvec* ux_lqr;
+    f64** u;
+    f64** x;
+    f64** eta;
 
-    f64* lbx_wrk;
-    f64* ubx_wrk;
-    f64* lbu_wrk;
-    f64* ubu_wrk;
-    f64* lg_wrk;
-    f64* ug_wrk;
-
+    f64** lbx_wrk;
+    f64** ubx_wrk;
+    f64** lbu_wrk;
+    f64** ubu_wrk;
+    f64** lg_wrk;
+    f64** ug_wrk;
+    
+    daocp_constraint_type** contypes; 
     u32* cnx;
     u32* cnu;
     u32* cbx;

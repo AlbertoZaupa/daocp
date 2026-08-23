@@ -59,8 +59,141 @@ u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n) {
     return argmin;
 }
 
-void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+static void compute_feedforwards(daocp_workspace* wrk, daocp_qp* qp) {
+    f64* u = *wrk->u;
+    f64* eta = *wrk->eta;
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    memset(u, 0, wrk->nu_tot*sizeof(f64));
+    memset(eta, 0, wrk->neta*sizeof(f64));
 
+    // Get feedforwards (du, deta).
+    u32 u_cols = wrk->cnu[wrk->as.max_t] + qp->dims->nu[wrk->as.max_t];
+    u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
+    v0.pa = u;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Mu + i*wrk->nu_tot;
+        blasfeo_daxpy(u_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
+    v0.pa = eta;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        v1.pa = wrk->Me + i*wrk->neta;
+        blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
+    }
+}
+
+static inline void populate_constraint_struct(daocp_constraint* constr, u32 t, u32 idx, daocp_constraint_type type, u32 is_upper) {
+    constr->t = t;
+    constr->idx = idx;
+    constr->is_upper = is_upper;
+    constr->type = type;
+}
+
+static inline u32 check_bounds_at_t(u32 nb, u32* idxb, f64* v, f64* lb, f64* ub, u32 is_state, daocp_constraint* constr) {
+    for (u32 i=0; i<nb; ++i) {
+        u32 idx = idxb[i];
+        f64 uval = v[idx];
+        f64 tmp1 = uval - ub[idx];
+        f64 tmp2 = lb[idx] - uval;
+        if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
+            populate_constraint_struct(constr, 0, idx, is_state? DAOCP_BOUND_X : DAOCP_BOUND_U, tmp1 > ZERO_TOL ? 1 : 0);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static inline u32 check_constraints_at_t(
+    u32 nc, u32 nx, u32 nu, daocp_constraint_type* types, 
+    f64* Cx, f64* Cu, f64* x, f64* u, f64* lb, 
+    f64* ub, daocp_constraint* constr
+) {
+    struct blasfeo_dvec v0, v1;
+    for (u32 i=0; i<nc; ++i) {
+        f64 val = 0;
+        if (types[i] == DAOCP_ONLY_U || types[i] == DAOCP_MIXED) {
+            v0.pa = Cu+i*nu; v1.pa = u;
+            val = blasfeo_ddot(nu, &v0, 0, &v1, 0);
+        }
+        if (types[i] == DAOCP_ONLY_X || types[i] == DAOCP_MIXED) {
+            v0.pa = Cx+i*nu; v1.pa = x;
+            val = blasfeo_ddot(nx, &v0, 0, &v1, 0);
+        }
+        f64 tmp1 = val - ub[i];
+        f64 tmp2 = lb[i] - val;
+        if (tmp1 > ZERO_TOL || tmp2 > ZERO_TOL) {
+            populate_constraint_struct(constr, 0, i, types[i], tmp1 > ZERO_TOL ? 1 : 0);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+    u32 N = qp->dims->N;
+    daocp_constraint_type** contypes = wrk->contypes;
+    u32* nx = qp->dims->nx; u32* nu = qp->dims->nu; 
+    u32* rho = wrk->rho;
+    u32* nbx = qp->dims->nbx; u32* nbu = qp->dims->nbu;
+    u32* ng = qp->dims->ng;
+    f64** u = wrk->u; f64** x = wrk->x; f64** eta = wrk->eta;
+    f64** lbu = wrk->lbu_wrk; f64** ubu = wrk->ubu_wrk;
+    f64** lbx = wrk->lbx_wrk; f64** ubx = wrk->ubx_wrk;
+    u32** idxbx = qp->idxbx; u32** idxbu = qp->idxbu;
+    f64** Cu = qp->Cu; f64** Cx = qp->Cx;
+    f64** lg = wrk->lg_wrk; f64** ug = wrk->ug_wrk;
+
+    // Compute feedforward terms
+    compute_feedforwards(wrk, qp);
+
+    // Run forward recursion and stop as soon as a violated constraint
+    // is detected.
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    violated->t = qp->dims->N+1;
+
+    // First iteration (x0 = 0)
+    v0.pa = u[0]; v1.pa = eta[0];
+    blasfeo_dvecsc(nu, -1.0, &v0, 0);
+    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
+    if (check_bounds_at_t(nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
+        return;
+    if (check_constraints_at_t(ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
+    // State evolution
+    v1.pa = x[1];
+    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->Bt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+    if (check_bounds_at_t(qp->dims->nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
+        return;
+
+    for (u32 t=1; t<N; ++t) {
+        // Compute control
+        v0.pa = u[t]; v1.pa = x[t];
+        blasfeo_dgemv_t(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
+        v0.pa = eta[t];
+        blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v0.pa = u[t]; v1.pa = eta[t];
+        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
+
+        // Check control bounds
+        if (check_bounds_at_t(nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated)) 
+            return;
+        // Check constraints at t
+        if (check_constraints_at_t(ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated)) 
+            return; 
+
+        // Propagate state dynamics
+        v0.pa = x[t]; v1.pa = x[t+1];
+        blasfeo_dgemv_t(nx[t], nx[t], 1.0, qp->At+t, 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
+        v0.pa = u[t];
+        blasfeo_dgemv_t(nu, nx, 1.0, qp->Bt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+
+        // Check state bounds
+        if (check_bounds_at_t(nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated)) 
+            return;
+    }
+
+    // Check constraints on terminal state
+    check_constraints_at_t(ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
 }
 
 void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
