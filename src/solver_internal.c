@@ -197,6 +197,121 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
 }
 
 void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+    u32 N = qp->dims->N;
+    daocp_constraint_type** contypes = wrk->contypes;
+    u32* nx = qp->dims->nx; u32* nu = qp->dims->nu;
+    u32* rho = wrk->rho;
+    u32* nbx = qp->dims->nbx; u32* nbu = qp->dims->nbu;
+    u32* ng = qp->dims->ng;
+    f64** u = wrk->u; f64** x = wrk->x; f64** eta = wrk->eta;
+    f64** lbu = wrk->lbu_wrk; f64** ubu = wrk->ubu_wrk;
+    f64** lbx = wrk->lbx_wrk; f64** ubx = wrk->ubx_wrk;
+    u32** idxbx = qp->idxbx; u32** idxbu = qp->idxbu;
+    f64** Cu = qp->Cu; f64** Cx = qp->Cx;
+    f64** lg = wrk->lg_wrk; f64** ug = wrk->ug_wrk;
+
+    // Compute feedforward terms
+    compute_feedforwards(wrk, qp);
+
+    // Run forward recursion to compute the primal minimizer.
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    v0.pa = u[0]; v1.pa = eta[0];
+    blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
+    TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
+    v1.pa = x[1];
+    blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->Bt[0], 0, 0,
+                    &v0, 0, 0.0, &v1, 0, &v1, 0);
+
+    for (u32 t=1; t<N; ++t) {
+        // Compute control
+        v0.pa = u[t]; v1.pa = x[t];
+        blasfeo_dgemv_t(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0,
+                        &v1, 0, -1.0, &v0, 0, &v0, 0);
+        v0.pa = eta[t];
+        blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0,
+                        &v1, 0, 1.0, &v0, 0, &v0, 0);
+        v0.pa = u[t]; v1.pa = eta[t];
+        TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
+
+        // Propagate state dynamics
+        v0.pa = x[t]; v1.pa = x[t+1];
+        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->At+t, 0, 0,
+                        &v0, 0, 0.0, &v1, 0, &v1, 0);
+        v0.pa = u[t];
+        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->Bt+t, 0, 0,
+                        &v0, 0, 1.0, &v1, 0, &v1, 0);
+    }
+
+    // Find the inactive constraint with the largest violation.
+    f64 max_violation = ZERO_TOL;
+    violated->t = N+1;
+    for (u32 t=0; t<=N; ++t) {
+        if (t < N) {
+            // Check control bounds
+            for (u32 i=0; i<nbu[t]; ++i) {
+                u32 idx = idxbu[t][i];
+                if (daocp_is_active(wrk, t, idx, DAOCP_BOUND_U)) continue;
+
+                f64 tmp = u[t][idx] - ubu[t][idx];
+                if (tmp > max_violation) {
+                    max_violation = tmp;
+                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_U, 1);
+                }
+                tmp = lbu[t][idx] - u[t][idx];
+                if (tmp > max_violation) {
+                    max_violation = tmp;
+                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_U, 0);
+                }
+            }
+        }
+
+        // Check state bounds (x0 is fixed and handled separately)
+        if (t > 0) {
+            for (u32 i=0; i<nbx[t]; ++i) {
+                u32 idx = idxbx[t][i];
+                if (daocp_is_active(wrk, t, idx, DAOCP_BOUND_X)) continue;
+
+                f64 tmp = x[t][idx] - ubx[t][idx];
+                if (tmp > max_violation) {
+                    max_violation = tmp;
+                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_X, 1);
+                }
+                tmp = lbx[t][idx] - x[t][idx];
+                if (tmp > max_violation) {
+                    max_violation = tmp;
+                    populate_constraint_struct(violated, t, idx, DAOCP_BOUND_X, 0);
+                }
+            }
+        }
+
+        // Check general constraints
+        for (u32 i=0; i<ng[t]; ++i) {
+            daocp_constraint_type type = contypes[t][i];
+            if (daocp_is_active(wrk, t, i, type)) continue;
+
+            f64 val = 0.0;
+            if (t < N && (type == DAOCP_ONLY_U || type == DAOCP_MIXED)) {
+                v0.pa = Cu[t]+i*nu[t]; v1.pa = u[t];
+                val = blasfeo_ddot(nu[t], &v0, 0, &v1, 0);
+            }
+            if (type == DAOCP_ONLY_X || type == DAOCP_MIXED) {
+                v0.pa = Cx[t]+i*nx[t]; v1.pa = x[t];
+                val += blasfeo_ddot(nx[t], &v0, 0, &v1, 0);
+            }
+
+            f64 tmp = val - ug[t][i];
+            if (tmp > max_violation) {
+                max_violation = tmp;
+                populate_constraint_struct(violated, t, i, type, 1);
+            }
+            tmp = lg[t][i] - val;
+            if (tmp > max_violation) {
+                max_violation = tmp;
+                populate_constraint_struct(violated, t, i, type, 0);
+            }
+        }
+    }
 
 }
 
