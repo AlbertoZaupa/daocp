@@ -698,12 +698,16 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
     u32* nbx = qp->dims.nbx;
     u32* ng = qp->dims.ng;
     for (u32 t=0; t<=N; ++t) {
-        if (t>0) memcpy(qp->lbx[t], lbx[t], nbx[t]*sizeof(f64));
-        if (t>0) memcpy(qp->ubx[t], ubx[t], nbx[t]*sizeof(f64));
-        if (t<N) memcpy(qp->lbu[t], lbu[t], nbu[t]*sizeof(f64));
-        if (t<N) memcpy(qp->ubu[t], ubu[t], nbu[t]*sizeof(f64));
-        memcpy(qp->cl[t], cl[t], ng[t]*sizeof(f64));
-        memcpy(qp->cu[t], cu[t], ng[t]*sizeof(f64));
+        if (t>0 && lbx[t] != qp->lbx[t])
+            memcpy(qp->lbx[t], lbx[t], nbx[t]*sizeof(f64));
+        if (t>0 && ubx[t] != qp->ubx[t])
+            memcpy(qp->ubx[t], ubx[t], nbx[t]*sizeof(f64));
+        if (t<N && lbu[t] != qp->lbu[t])
+            memcpy(qp->lbu[t], lbu[t], nbu[t]*sizeof(f64));
+        if (t<N && ubu[t] != qp->ubu[t])
+            memcpy(qp->ubu[t], ubu[t], nbu[t]*sizeof(f64));
+        if (cl[t] != qp->cl[t]) memcpy(qp->cl[t], cl[t], ng[t]*sizeof(f64));
+        if (cu[t] != qp->cu[t]) memcpy(qp->cu[t], cu[t], ng[t]*sizeof(f64));
     }
 
     if (wrk->singular) daocp_reset_working_set(wrk);

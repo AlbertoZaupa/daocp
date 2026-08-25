@@ -11,9 +11,8 @@ def _stage(value, t, stage_ndim):
 
 
 def check_primal_feasibility(res, x0, A, B, w,
-                             idxbx, idxbu, lbx, ubx, lbu, ubu,
-                             D, C, du, dl, cu, cl,
-                             Deq=None, Ceq=None, deq=None, ceq=None, tol=1e-6):
+                             lbx, ubx, lbu, ubu,
+                             C, c_l, c_u, tol=1e-6):
     """Assert primal feasibility and return the largest constraint violation."""
     x = np.asarray(res.x)
     u = np.asarray(res.u)
@@ -25,64 +24,56 @@ def check_primal_feasibility(res, x0, A, B, w,
     inequality_violation = 0.0
     previous_x = np.asarray(x0)
     for t in range(len(u)):
+        disturbance = 0 if w is None else _stage(w, t, 1)
         dynamics_residual = (
             x[t] - _stage(A, t, 2) @ previous_x
-            - _stage(B, t, 2) @ u[t] - _stage(w, t, 1)
+            - _stage(B, t, 2) @ u[t] - disturbance
         )
         equality_violation = max(
             equality_violation,
             np.max(np.abs(dynamics_residual), initial=0.0),
         )
 
-        if Ceq is not None:
-            residual = _stage(Ceq, t, 2) @ u[t] - _stage(ceq, t, 1)
-            equality_violation = max(
-                equality_violation, np.max(np.abs(residual), initial=0.0)
-            )
-        if Deq is not None:
-            residual = _stage(Deq, t, 2) @ x[t] - _stage(deq, t, 1)
-            equality_violation = max(
-                equality_violation, np.max(np.abs(residual), initial=0.0)
-            )
-        if C is not None:
-            image = _stage(C, t, 2) @ u[t]
-            upper_residual = image - _stage(cu, t, 1)
-            lower_residual = _stage(cl, t, 1) - image
+        if lbu is not None or ubu is not None:
+            lower = -np.inf if lbu is None else _stage(lbu, t, 1)
+            upper = np.inf if ubu is None else _stage(ubu, t, 1)
+            upper_residual = u[t] - upper
+            lower_residual = lower - u[t]
             inequality_violation = max(
                 inequality_violation,
                 np.max(upper_residual, initial=0.0),
                 np.max(lower_residual, initial=0.0),
             )
-        if D is not None:
-            image = _stage(D, t, 2) @ x[t]
-            upper_residual = image - _stage(du, t, 1)
-            lower_residual = _stage(dl, t, 1) - image
-            inequality_violation = max(
-                inequality_violation,
-                np.max(upper_residual, initial=0.0),
-                np.max(lower_residual, initial=0.0),
-            )
-        if idxbu is not None:
-            indices = np.asarray(_stage(idxbu, t, 1), dtype=int)
-            image = u[t, indices]
-            upper_residual = image - _stage(ubu, t, 1)
-            lower_residual = _stage(lbu, t, 1) - image
-            inequality_violation = max(
-                inequality_violation,
-                np.max(upper_residual, initial=0.0),
-                np.max(lower_residual, initial=0.0),
-            )
-        if idxbx is not None:
-            indices = np.asarray(_stage(idxbx, t, 1), dtype=int)
-            image = x[t, indices]
-            upper_residual = image - _stage(ubx, t, 1)
-            lower_residual = _stage(lbx, t, 1) - image
+        if lbx is not None or ubx is not None:
+            lower = -np.inf if lbx is None else _stage(lbx, t, 1)
+            upper = np.inf if ubx is None else _stage(ubx, t, 1)
+            upper_residual = x[t] - upper
+            lower_residual = lower - x[t]
             inequality_violation = max(
                 inequality_violation,
                 np.max(upper_residual, initial=0.0),
                 np.max(lower_residual, initial=0.0),
             )
         previous_x = x[t]
+
+    if C is not None:
+        states = [np.asarray(x0), *x]
+        for t, (C_u, C_x) in enumerate(C):
+            C_u = None if C_u is None else np.asarray(C_u)
+            C_x = None if C_x is None else np.asarray(C_x)
+            rows = C_u.shape[0] if C_u is not None else C_x.shape[0]
+            image = np.zeros(rows)
+            if C_u is not None and C_u.shape[1]:
+                image += C_u @ u[t]
+            if C_x is not None:
+                image += C_x @ states[t]
+            lower = -np.inf if c_l is None else _stage(c_l, t, 1)
+            upper = np.inf if c_u is None else _stage(c_u, t, 1)
+            inequality_violation = max(
+                inequality_violation,
+                np.max(image - upper, initial=0.0),
+                np.max(lower - image, initial=0.0),
+            )
 
     max_violation = max(equality_violation, inequality_violation)
     assert np.isfinite(max_violation) and max_violation <= tol, (

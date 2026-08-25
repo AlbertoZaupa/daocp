@@ -477,6 +477,11 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     wrk->as.n_active = 0;
     wrk->as.max_t = 0;
     wrk->singular = 0;
+
+    daocp_solve_riccati(wrk, qp);
+    for (u32 t = 0; t < N; ++t)
+        wrk->eta[t] = eta_memory + wrk->crho[t];
+    daocp_solve_lqr(wrk, qp);
 }
 
 u32 daocp_sol_memsize(daocp_dims* dims)
@@ -505,4 +510,22 @@ void daocp_sol_memory_assign(daocp_dims* dims, daocp_sol* sol, void* memory)
         blasfeo_create_dvec(nv, sol->ux + t, c_ptr);
         c_ptr += blasfeo_memsize_dvec(nv);
     }
+}
+
+void daocp_update_problem(
+    void* ws, daocp_qp* qp, f64* x0, struct blasfeo_dvec* rq,
+    f64** lbx, f64** ubx, f64** lbu, f64** ubu, f64** cl, f64** cu)
+{
+    daocp_update((daocp_workspace*) ws, qp, x0, rq,
+                 lbx, ubx, lbu, ubu, cl, cu);
+}
+
+daocp_status daocp_workspace_status(void* ws)
+{
+    return ((daocp_workspace*) ws)->status;
+}
+
+u32 daocp_workspace_iterations(void* ws)
+{
+    return ((daocp_workspace*) ws)->iters;
 }

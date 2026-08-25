@@ -72,6 +72,11 @@ u32 daocp_sol_memsize(daocp_dims* dims);
 void daocp_sol_memory_assign(daocp_dims* dims, daocp_sol* sol, void* memory);
 
 void daocp_solve(daocp_args* args, daocp_qp* qp, void* ws, daocp_sol* sol);
+void daocp_update_problem(
+    void* ws, daocp_qp* qp, f64* x0, struct blasfeo_dvec* rq,
+    f64** lbx, f64** ubx, f64** lbu, f64** ubu, f64** cl, f64** cu);
+daocp_status daocp_workspace_status(void* ws);
+u32 daocp_workspace_iterations(void* ws);
 
 
 #endif

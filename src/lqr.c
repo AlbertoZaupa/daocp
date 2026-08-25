@@ -68,7 +68,10 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         */
 
         // Compute K0 = (A'PB + S')Lu00^{-T}
-        blasfeo_dgemm_nt(nx[t], nu[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, tmp1, 0, 0, 1.0, qp->RSQrq+t, nu[t], 0, wrk->Ku+t, 0, 0);
+        blasfeo_dgemm_nt(nx[t], nu[t], nx[t+1], 1.0,
+                        qp->BAwt+t, nu[t], 0, tmp1, 0, 0,
+                        1.0, qp->RSQrq+t, nu[t], 0,
+                        wrk->Ku+t, 0, 0);
         blasfeo_dtrsm_rltn(nx[t], nu[t], 1.0, wrk->Luu+t, 0, 0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0);
         // Compute K1 = (M' - K0 Lu01')Lu11^{-T}
         blasfeo_pack_dmat(nx[t], rho, GEtmp+nu[t], nx[t]+nu[t]+1, wrk->Ke+t, 0, 0);
@@ -80,7 +83,13 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
             Update P = Q + A'PA - Ku Ku' + Keta Keta'
         */
         blasfeo_dgemm_nt(nx[t], nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
-        blasfeo_dsyrk_ln(nx[t], nx[t+1], 1.0, tmp1, 0, 0, qp->BAwt+t, nu[t], 0, 1.0, qp->RSQrq+t, nu[t], nu[t], wrk->P+t-1, 0, 0);
+        // POSSIBLE ALIGNMENT ISSUE WITH BLASFEO (On Mac, to be verified)
+        // When the A and Q operands below are not aligned, reversing the
+        // A, tmp1=A'P order creates a correctness issue.
+        blasfeo_dsyrk_ln(nx[t], nx[t+1], 1.0,
+                         qp->BAwt+t, nu[t], 0, tmp1, 0, 0,
+                         1.0, qp->RSQrq+t, nu[t], nu[t],
+                         wrk->P+t-1, 0, 0);
         blasfeo_dsyrk_ln(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
         blasfeo_dsyrk_ln(nx[t], rho, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
         blasfeo_dtrtr_l(nx[t], wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);

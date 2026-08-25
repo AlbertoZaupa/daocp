@@ -15,12 +15,15 @@ This repository implements a dual active-set solver for Quadratic Programs (QPs)
       \begin{bmatrix} u_t \\ x_t \end{bmatrix}
 \right) \\
 \text{subject to} \quad
-& x_{t+1} = A_t x_t + B_t u_t + w_t, \\
-& \underline{u}_t \leq u_t \leq \overline{u}_t, \quad
-  \underline{x}_{t+1} \leq x_{t+1} \leq \overline{x}_{t+1}, \\
-& c_t^l \leq C_t u_t \leq c_t^u, \quad
-  d_{t+1}^l \leq D_{t+1} x_{t+1} \leq d_{t+1}^u,
+& x_{t+1} = A_t x_t + B_t u_t + w_t,
   \quad t = 0, \ldots, N-1, \\
+& \underline{u}_t \leq u_t \leq \overline{u}_t,
+  \quad t = 0, \ldots, N-1, \\
+& \underline{x}_t \leq x_t \leq \overline{x}_t,
+  \quad t = 1, \ldots, N, \\
+& \underline{c}_t \leq C_{u,t} u_t + C_{x,t} x_t \leq \overline{c}_t,
+  \quad t = 0, \ldots, N-1, \\
+& \underline{c}_N \leq C_{x,N} x_N \leq \overline{c}_N, \\
 & x_0 \text{ given.}
 \end{aligned}
 ```

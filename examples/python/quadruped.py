@@ -16,40 +16,57 @@ tau_low = data['l'][-20:]
 tau_upp = data['u'][-20:]
 A = data['Ad']
 B = data['Bd']
-w = np.zeros(nx)
 Q = data['Q']
-S = np.zeros((nu, nx))
 R = data['R']
 P = dare(A, B, Q, R)
-Deq = data["C_pf"][:, 32:]
-deq = np.zeros(12)
-idxbu = np.arange(20)
-lbu = tau_low
-ubu = tau_upp
-C = data["C_nf"][:, :32]
-cl = data["l_nf"]
-cu = np.full(len(cl), np.inf)
+Cx_eq = data["C_pf"][:, 32:]
+c_eq = np.zeros(12)
+lbu = np.full(nu, -np.inf)
+ubu = np.full(nu, np.inf)
+lbu[:20] = tau_low
+ubu[:20] = tau_upp
+Cu_ineq = data["C_nf"][:, :32]
+c_l_ineq = data["l_nf"]
+c_u_ineq = np.full(len(c_l_ineq), np.inf)
 dx0 = data["dX"][:52]
-q = np.zeros(nx)
-r = np.zeros(nu)
-lN = lambda a : [a.copy() for i in range(N)]
+lN = lambda a, stages=N: [a.copy() for i in range(stages)]
 max_iter = 1000
-Ql = lN(Q)
+Ql = lN(Q, N + 1)
 Ql[-1] = P.copy()
 nreps = 200
 
+C = []
+c_l = []
+c_u = []
+for t in range(N + 1):
+    stage_Cu = []
+    stage_Cx = []
+    stage_cl = []
+    stage_cu = []
+    if t < N:
+        stage_Cu.append(Cu_ineq)
+        stage_Cx.append(np.zeros((len(c_l_ineq), nx)))
+        stage_cl.append(c_l_ineq)
+        stage_cu.append(c_u_ineq)
+    if t > 0:
+        stage_Cu.append(np.zeros((len(c_eq), nu if t < N else 0)))
+        stage_Cx.append(Cx_eq)
+        stage_cl.append(c_eq)
+        stage_cu.append(c_eq)
+    C.append([np.vstack(stage_Cu), np.vstack(stage_Cx)])
+    c_l.append(np.hstack(stage_cl))
+    c_u.append(np.hstack(stage_cu))
+
 def solve_ocp():
-    solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, idxbu, None, None, lbu, ubu,
-                        None, C, None, None, cu, cl,
-                        Deq, None, deq, None,
+    solver = OCPsolver(A, B, None, Ql, R, None,
+                        None, None, None, None, lbu, ubu,
+                        C, c_l, c_u,
                         dx0, N, nx, nu, max_iter)
     res = solver.solve()
     assert res.info.status == "SOLVED", res.info.status
     primal_violation = check_primal_feasibility(
-        res, dx0, A, B, w, None, idxbu, None, None, lbu, ubu,
-        None, C, None, None, cu, cl,
-        Deq, None, deq, None
+        res, dx0, A, B, None, None, None, lbu, ubu,
+        C, c_l, c_u
     )
     print(f"Maximum primal feasibility violation: {primal_violation:.3e}")
     print(f"Iterations until convergence: {res.info.iter}")
@@ -58,10 +75,9 @@ def solve_ocp():
 def time_ocp():
     total = 0
     for i in range(nreps):
-        solver = OCPsolver(A, B, w, Ql, R, S,
-                        q, r, None, idxbu, None, None, lbu, ubu,
-                        None, C, None, None, cu, cl,
-                        Deq, None, deq, None,
+        solver = OCPsolver(A, B, None, Ql, R, None,
+                        None, None, None, None, lbu, ubu,
+                        C, c_l, c_u,
                         dx0, N, nx, nu, max_iter)
         res = solver.solve()
         total += res.info.solve_time    
