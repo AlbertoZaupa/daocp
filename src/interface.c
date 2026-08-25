@@ -1,10 +1,10 @@
 #include <internal.h>
-#define DAOCP_MEMORY_ALIGNMENT 64U
+#define DAOCP_MEMORY_ALIGNMENT 64
 
 static char* daocp_align_memory(char* memory) {
     uintptr_t address = (uintptr_t) memory;
-    address = (address + DAOCP_MEMORY_ALIGNMENT - 1U)
-            & ~((uintptr_t) DAOCP_MEMORY_ALIGNMENT - 1U);
+    address = (address + DAOCP_MEMORY_ALIGNMENT - 1)
+            & ~((uintptr_t) DAOCP_MEMORY_ALIGNMENT - 1);
     return (char*) address;
 }
 
