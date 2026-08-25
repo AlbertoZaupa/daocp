@@ -4,7 +4,7 @@
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
-    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims->nx[0], qp->dims->nx[0]);
+    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims.nx[0], qp->dims.nx[0]);
     for (u32 i=0; i<wrk->nH0; ++i)
         if (DAOCP_ABS(wrk->tmp1[i]) > DAOCP_ZERO_TOL) return 1;
     return 0;
@@ -68,7 +68,7 @@ static void compute_feedforwards(daocp_workspace* wrk, daocp_qp* qp) {
     memset(eta, 0, wrk->neta*sizeof(f64));
 
     // Get feedforwards (du, deta).
-    u32 u_cols = wrk->cnu[wrk->as.max_t] + qp->dims->nu[wrk->as.max_t];
+    u32 u_cols = wrk->cnu[wrk->as.max_t] + qp->dims.nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
     v0.pa = u;
     for (u32 i=0; i<wrk->as.n_active; ++i) {
@@ -137,12 +137,12 @@ static inline u32 check_constraints_at_t(
 }
 
 void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
-    u32 N = qp->dims->N;
+    u32 N = qp->dims.N;
     daocp_constraint_type** contypes = wrk->contypes;
-    u32* nx = qp->dims->nx; u32* nu = qp->dims->nu; 
+    u32* nx = qp->dims.nx; u32* nu = qp->dims.nu; 
     u32* rho = wrk->rho;
-    u32* nbx = qp->dims->nbx; u32* nbu = qp->dims->nbu;
-    u32* ng = qp->dims->ng;
+    u32* nbx = qp->dims.nbx; u32* nbu = qp->dims.nbu;
+    u32* ng = qp->dims.ng;
     f64** u = wrk->u; f64** x = wrk->x; f64** eta = wrk->eta;
     f64** lbu = wrk->lbu_wrk; f64** ubu = wrk->ubu_wrk;
     f64** lbx = wrk->lbx_wrk; f64** ubx = wrk->ubx_wrk;
@@ -157,7 +157,7 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
     // is detected.
     struct blasfeo_dvec v0;
     struct blasfeo_dvec v1;
-    violated->t = qp->dims->N+1;
+    violated->t = qp->dims.N+1;
 
     // First iteration (x0 = 0)
     v0.pa = u[0]; v1.pa = eta[0];
@@ -169,7 +169,7 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
     // State evolution
     v1.pa = x[1];
     blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-    if (check_bounds_at_t(wrk, 1, qp->dims->nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
+    if (check_bounds_at_t(wrk, 1, qp->dims.nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
         return;
 
     for (u32 t=1; t<N; ++t) {
@@ -204,12 +204,12 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
 }
 
 void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
-    u32 N = qp->dims->N;
+    u32 N = qp->dims.N;
     daocp_constraint_type** contypes = wrk->contypes;
-    u32* nx = qp->dims->nx; u32* nu = qp->dims->nu;
+    u32* nx = qp->dims.nx; u32* nu = qp->dims.nu;
     u32* rho = wrk->rho;
-    u32* nbx = qp->dims->nbx; u32* nbu = qp->dims->nbu;
-    u32* ng = qp->dims->ng;
+    u32* nbx = qp->dims.nbx; u32* nbu = qp->dims.nbu;
+    u32* ng = qp->dims.ng;
     f64** u = wrk->u; f64** x = wrk->x; f64** eta = wrk->eta;
     f64** lbu = wrk->lbu_wrk; f64** ubu = wrk->ubu_wrk;
     f64** lbx = wrk->lbx_wrk; f64** ubx = wrk->ubx_wrk;
@@ -341,8 +341,8 @@ static void compute_M_row(
     u32 idx = constr->idx;
     struct blasfeo_dvec* p = &wrk->costate0;
     struct blasfeo_dvec* ptmp = &wrk->costate1;
-    u32* nx = qp->dims->nx;
-    u32* nu = qp->dims->nu;
+    u32* nx = qp->dims.nx;
+    u32* nu = qp->dims.nu;
     u32* rho = wrk->rho;
     u32* cnu = wrk->cnu;
     u32* crho = wrk->crho;
@@ -401,7 +401,7 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
         2) Compute their signed products with existing rows.
     */
     u32 n_active = wrk->as.n_active;
-    u32* nu = qp->dims->nu;
+    u32* nu = qp->dims.nu;
 
     compute_M_row(wrk, qp, constr, n_active);
     

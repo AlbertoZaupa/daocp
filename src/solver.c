@@ -15,12 +15,12 @@ void solve(
         wrk->status = DAOCP_INFEASIBLE;
         wrk->iters = 0;
         // Set ux to the lqr solution and return
-        for (u32 t=0; t<qp->dims->N; ++t) {
-            blasfeo_dveccp(qp->dims->nu[t]+qp->dims->nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
-            blasfeo_dvecsc(qp->dims->nbu[t]+qp->dims->nbx[t]+qp->dims->ng[t], 0.0, sol->lam+t, 0);
+        for (u32 t=0; t<qp->dims.N; ++t) {
+            blasfeo_dveccp(qp->dims.nu[t]+qp->dims.nx[t], wrk->ux_lqr+t, 0, sol->ux+t, 0);
+            blasfeo_dvecsc(qp->dims.nbu[t]+qp->dims.nbx[t]+qp->dims.ng[t], 0.0, sol->lam+t, 0);
         }
-        blasfeo_dveccp(qp->dims->nx[qp->dims->N], wrk->ux_lqr+qp->dims->N, 0, sol->ux+qp->dims->N, 0);
-        blasfeo_dvecsc(qp->dims->nbx[qp->dims->N]+qp->dims->ng[qp->dims->N], 0.0, sol->lam+qp->dims->N, 0);
+        blasfeo_dveccp(qp->dims.nx[qp->dims.N], wrk->ux_lqr+qp->dims.N, 0, sol->ux+qp->dims.N, 0);
+        blasfeo_dvecsc(qp->dims.nbx[qp->dims.N]+qp->dims.ng[qp->dims.N], 0.0, sol->lam+qp->dims.N, 0);
         return;
     }
 
@@ -33,8 +33,8 @@ void solve(
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
                 // Add a primal-violated constraint, if it exists
                 daocp_constraint violated;
-                selection_handle(qp, wrk, &violated);
-                if (violated.t > qp->dims->N) {
+                selection_handle(wrk, qp, &violated);
+                if (violated.t > qp->dims.N) {
                     wrk->status = DAOCP_SOLVED;
                     wrk->iters = k;
                     status_set = 1;

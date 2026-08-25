@@ -1,10 +1,10 @@
 #include <internal.h>
 
 void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
-    u32 N = qp->dims->N;
-    u32* nx = qp->dims->nx;
-    u32* nu = qp->dims->nu;
-    u32* ne = qp->dims->ne;
+    u32 N = qp->dims.N;
+    u32* nx = qp->dims.nx;
+    u32* nu = qp->dims.nu;
+    u32* ne = qp->dims.ne;
     struct blasfeo_dmat* tmp1 = &wrk->tmp2;
     f64* GEtmp = wrk->GEtmp;
     f64* ABtmp = wrk->ABtmp;
@@ -13,7 +13,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
 
     // Initialize recursion
     blasfeo_dgecp(nx[N], nx[N], qp->RSQrq+N, 0, 0, wrk->P+N-1, 0, 0);
-    u32 neq_x0 = qp->dims->ne[N];
+    u32 neq_x0 = qp->dims.ne[N];
     f64* tmp = H;
     for (u32 i=0; i<neq_x0; ++i) {
         memcpy(tmp, qp->Dx[N]+i*nx[N], nx[N]*sizeof(f64));
@@ -93,9 +93,9 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
 }
 
 void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
-    u32 N = qp->dims->N;
-    u32* nu = qp->dims->nu;
-    u32* nx = qp->dims->nx;
+    u32 N = qp->dims.N;
+    u32* nu = qp->dims.nu;
+    u32* nx = qp->dims.nx;
     u32* rho = wrk->rho;
     struct blasfeo_dvec* p = &wrk->costate0;
     struct blasfeo_dvec* ptmp = &wrk->costate1;
@@ -146,8 +146,8 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
     }
 
     // Evaluate constraints and adjust right/left-hand sides.
-    u32* nbx = qp->dims->nbx; u32* nbu = qp->dims->nbu;
-    u32* ng = qp->dims->ng;
+    u32* nbx = qp->dims.nbx; u32* nbu = qp->dims.nbu;
+    u32* ng = qp->dims.ng;
     u32** idxbx = qp->idxbx; u32** idxbu = qp->idxbu;
     daocp_constraint_type** types = wrk->contypes;
     f64** Cx = qp->Cx; f64** Cu = qp->Cu;

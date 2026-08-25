@@ -85,9 +85,6 @@ typedef struct {
     f64* GEtmp;
     f64* ABtmp;
     struct blasfeo_dmat tmp2;
-    struct blasfeo_dmat tmp3;
-    struct blasfeo_dmat tmp4;
-    struct blasfeo_dvec tmp5;
     struct blasfeo_dvec costate0;
     struct blasfeo_dvec costate1;
 } daocp_workspace;

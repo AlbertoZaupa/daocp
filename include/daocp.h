@@ -19,7 +19,7 @@ typedef struct {
 
 // QP data in the format accepted by the solver.
 typedef struct {
-    daocp_dims *dims;
+    daocp_dims dims;
     f64* x0;
     struct blasfeo_dmat* BAwt;
     struct blasfeo_dmat* RSQrq;
@@ -65,7 +65,7 @@ typedef enum {
 } daocp_status;
 
 void daocp_args_set_default(daocp_args* args);
-void daocp_workspace_memsize(daocp_dims* dims);
+u32 daocp_workspace_memsize(daocp_dims* dims);
 void daocp_workspace_init(daocp_dims* dims, daocp_qp* qp, void* ws);
 void daocp_solve(daocp_args* args, daocp_qp* qp, void* ws, daocp_sol* sol);
 
