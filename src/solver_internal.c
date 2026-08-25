@@ -639,8 +639,20 @@ u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     // Specialized syrk algorithm.
     u32 nu_cols = wrk->cnu[wrk->as.max_t] + wrk->dims->nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    daocp_fma_mm_nt(wrk->Ld, wrk->Mu, wrk->Mu, n_active, n_active, nu_cols, wrk->nu_tot);
-    daocp_fms_mm_nt(wrk->Ld, wrk->Me, wrk->Me, n_active, n_active, eta_cols, wrk->neta);
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    for (u32 i=0; i<n_active; ++i)
+        for (u32 j=0; j<n_active; ++j) {
+            v0.pa = wrk->Mu + i*wrk->nu_tot;
+            v1.pa = wrk->Mu + j*wrk->nu_tot;
+            wrk->Ld[i*W_stride+j] += blasfeo_ddot(nu_cols, &v0, 0, &v1, 0);
+        }
+    for (u32 i=0; i<n_active; ++i)
+        for (u32 j=0; j<n_active; ++j) {
+            v0.pa = wrk->Me + i*wrk->neta;
+            v1.pa = wrk->Me + j*wrk->neta;
+            wrk->Ld[i*W_stride+j] -= blasfeo_ddot(eta_cols, &v0, 0, &v1, 0);
+        }
 
     // Compute chol(dH), checking for singularity.
     for (u32 i=0; i<n_active; ++i) {
@@ -680,7 +692,7 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
     memcpy(qp->x0, x0, nx[0]*sizeof(f64));
     // Update cost
     for (u32 t=0; t<=N; ++t)
-        blasfeo_drowin(nx[t]+nu[t], 1.0, rq+t, 0, qp->RSQrq, nx[t]+nu[t], 0);
+        blasfeo_drowin(nx[t]+nu[t], 1.0, rq+t, 0, qp->RSQrq+t, nx[t]+nu[t], 0);
     // Update bounds
     u32* nbu = qp->dims.nbu;
     u32* nbx = qp->dims.nbx;
@@ -694,10 +706,12 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
         memcpy(qp->cu[t], cu[t], ng[t]*sizeof(f64));
     }
 
+    if (wrk->singular) daocp_reset_working_set(wrk);
+
     // Solve LQR
     daocp_solve_lqr(wrk, qp);
     for (u32 i=0; i<wrk->as.n_active; ++i) {
-        daocp_constraint* c = wrk->as.xi2con;
+        daocp_constraint* c = wrk->as.xi2con + i;
         f64* p;
         switch (c->type) {
             case DAOCP_BOUND_U:
