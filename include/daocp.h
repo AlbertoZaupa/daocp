@@ -41,7 +41,6 @@ typedef struct {
 // Solution data
 typedef struct {
     struct blasfeo_dvec* ux;
-    struct blasfeo_dvec* lam;
 } daocp_sol;
 
 // Constraint selection heuristic

@@ -608,6 +608,112 @@ void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_
     wrk->as.constraint_status[t][daocp_constraint_idx(wrk, t, idx, type)] = status;
 }
 
+void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
+    struct blasfeo_dvec v;
+    v.pa = wrk->u[0];
+    blasfeo_daxpy(wrk->dims->nu[0], 1.0, &v, 0, wrk->ux_lqr, 0, sol->ux, 0);
+    blasfeo_dveccp(wrk->dims->nx[0], wrk->ux_lqr, wrk->dims->nu[0], sol->ux, wrk->dims->nu[0]);
+    
+    for (u32 t=1; t<wrk->dims->N; ++t) {
+        v.pa = wrk->u[t];
+        blasfeo_daxpy(wrk->dims->nu[t], 1.0, &v, 0, wrk->ux_lqr+t, 0, sol->ux+t, 0);
+        v.pa = wrk->x[t];
+        blasfeo_daxpy(wrk->dims->nx[t], 1.0, &v, 0, wrk->ux_lqr+t, wrk->dims->nu[t], sol->ux+t, wrk->dims->nu[t]);
+    }
+    v.pa = wrk->x[wrk->dims->N];
+    blasfeo_daxpy(wrk->dims->nx[wrk->dims->N], 1.0, &v, 0, wrk->ux_lqr+wrk->dims->N, 0, sol->ux+wrk->dims->N, 0);
+}
+
+u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
+    u32 n_active = wrk->as.n_active;
+    u32 W_stride = wrk->W_stride;
+
+    // Compute Mu and Meta from scratch
+    for (u32 ci=0; ci<n_active; ++ci) {
+        daocp_constraint* constr = wrk->as.xi2con + ci;
+        compute_M_row(wrk, qp, constr, ci);
+    }
+
+    // Compute dH = Mu Mu' - Meta Meta'
+    memset(wrk->Ld, 0, n_active*W_stride*sizeof(f64));
+    // Specialized syrk algorithm.
+    u32 nu_cols = wrk->cnu[wrk->as.max_t] + wrk->dims->nu[wrk->as.max_t];
+    u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
+    daocp_fma_mm_nt(wrk->Ld, wrk->Mu, wrk->Mu, n_active, n_active, nu_cols, wrk->nu_tot);
+    daocp_fms_mm_nt(wrk->Ld, wrk->Me, wrk->Me, n_active, n_active, eta_cols, wrk->neta);
+
+    // Compute chol(dH), checking for singularity.
+    for (u32 i=0; i<n_active; ++i) {
+        f64* lii = wrk->Ld + i*W_stride + i;
+        if (*lii < DAOCP_ZERO_TOL) return 1; // Detected singularity.
+        *lii = sqrt(*lii);
+        for (u32 j=i+1; j<n_active; ++j) wrk->Ld[j*W_stride + i] /= *lii;
+        for (u32 j=i+1; j<n_active; ++j)
+            for (u32 k=i+1; k<n_active; ++k)
+                wrk->Ld[j*W_stride + k] -= wrk->Ld[j*W_stride + i] * wrk->Ld[k*W_stride + i];
+    }
+    return 0;
+}
+
+void daocp_reset_working_set(daocp_workspace* wrk) {
+    for (u32 t=0; t<=wrk->dims->N; ++t) {
+        u32 nbu = wrk->dims->nbu[t];
+        u32 nbx = wrk->dims->nbx[t];
+        u32 ng = wrk->dims->ng[t];
+        for (u32 i=0; i<nbu; ++i) wrk->as.constraint_status[t][i] = 0; 
+        for (u32 i=0; i<nbx; ++i) wrk->as.constraint_status[t][nbu+i] = 0; 
+        for (u32 i=0; i<ng; ++i) wrk->as.constraint_status[t][nbu+nbx+i] = 0; 
+    }
+    wrk->as.n_active = 0;
+    wrk->singular = 0;
+    wrk->as.max_t = 0;
+}
+
+void daocp_update(daocp_workspace* wrk, daocp_qp* qp, 
+    f64* x0, struct blasfeo_dvec* rq, f64** lbx, 
+    f64** ubx, f64** lbu, f64** ubu, f64** cl, f64** cu)
+{
+    u32 N = qp->dims.N;
+    u32* nx = qp->dims.nx;
+    u32* nu = qp->dims.nu;
+    // Update x0
+    memcpy(qp->x0, x0, nx[0]*sizeof(f64));
+    // Update cost
+    for (u32 t=0; t<=N; ++t)
+        blasfeo_drowin(nx[t]+nu[t], 1.0, rq+t, 0, qp->RSQrq, nx[t]+nu[t], 0);
+    // Update bounds
+    u32* nbu = qp->dims.nbu;
+    u32* nbx = qp->dims.nbx;
+    u32* ng = qp->dims.ng;
+    for (u32 t=0; t<=N; ++t) {
+        memcpy(qp->lbx[t], lbx[t], nbx[t]*sizeof(f64));
+        memcpy(qp->ubx[t], ubx[t], nbx[t]*sizeof(f64));
+        memcpy(qp->lbu[t], lbu[t], nbu[t]*sizeof(f64));
+        memcpy(qp->ubu[t], ubu[t], nbu[t]*sizeof(f64));
+        memcpy(qp->cl[t], cl[t], ng[t]*sizeof(f64));
+        memcpy(qp->cu[t], cu[t], ng[t]*sizeof(f64));
+    }
+
+    // Solve LQR
+    daocp_solve_lqr(wrk, qp);
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* c = wrk->as.xi2con;
+        f64* p;
+        switch (c->type) {
+            case DAOCP_BOUND_U:
+                p = (c->is_upper ? wrk->ubu_wrk : wrk->lbu_wrk)[c->t];
+                break;
+            case DAOCP_BOUND_X:
+                p = (c->is_upper ? wrk->ubx_wrk : wrk->lbx_wrk)[c->t];
+                break;
+            default:
+                p = (c->is_upper ? wrk->ug_wrk : wrk->lg_wrk)[c->t];
+                break;
+        }
+        wrk->dual_linear[i] = p[c->idx];
+    } 
+}
+
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2) {
     unsigned char* p3 = *p1;
     *p1 = *p2;

@@ -44,6 +44,16 @@ void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride)
         }
 }
 
+void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride) {
+    struct blasfeo_dvec v0;
+    struct blasfeo_dvec v1;
+    for (u32 i=0; i<nr; ++i)
+        for (u32 j=0; j<nc; ++j) {
+            v0.pa = A + i*k; v1.pa = B + j*k;
+            C[i*ostride + j] -= blasfeo_ddot(k, &v0, 0, &v1, 0);
+        }
+}
+
 u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R) {
     u32 rho = 0;
     for (u32 i=0; i<nc; ++i) {

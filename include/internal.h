@@ -106,6 +106,13 @@ u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);
 
+// Solver update logic
+u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp);
+void daocp_reset_working_set(daocp_workspace* wrk);
+void daocp_update(daocp_workspace* wrk, daocp_qp* qp, 
+    f64* x0, struct blasfeo_dvec* rq, f64** lbx, 
+    f64** ubx, f64** lbu, f64** ubu, f64** cl, f64** cu);
+
 // Riccati and lqr routines
 void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp);
 void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
@@ -126,6 +133,7 @@ void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
+void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);
 void daocp_negate(f64* v, u32 n);
 f64 daocp_dot(f64* v, f64* w, u32 n);
