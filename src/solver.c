@@ -1,6 +1,6 @@
 #include <internal.h>
 
-void solve(
+void daocp_solve(
     daocp_args* args, daocp_qp* qp, void* ws,
     daocp_sol* sol
 ) {

@@ -64,8 +64,13 @@ typedef enum {
 } daocp_status;
 
 void daocp_args_set_default(daocp_args* args);
+u32 daocp_qp_memsize(daocp_dims* dims);
+void daocp_qp_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory);
 u32 daocp_workspace_memsize(daocp_dims* dims);
-void daocp_workspace_init(daocp_dims* dims, daocp_qp* qp, void* ws);
+void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory);
+u32 daocp_sol_memsize(daocp_dims* dims);
+void daocp_sol_memory_assign(daocp_dims* dims, daocp_sol* sol, void* memory);
+
 void daocp_solve(daocp_args* args, daocp_qp* qp, void* ws, daocp_sol* sol);
 
 
