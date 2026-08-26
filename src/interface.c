@@ -337,7 +337,10 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
 
     f64* u_memory = (f64*) c_ptr;
     c_ptr += nu_tot * sizeof(f64);
-    f64* eta_memory = (f64*) c_ptr;
+    f64* eta_memory = (f64*) c_ptr; 
+    // Only the initial pointer is set, the ramaining are populated
+    // after the solution of the riccati.
+    wrk->eta[0] = eta_memory; 
     c_ptr += nu_tot * sizeof(f64);
     f64* x_memory = (f64*) c_ptr;
     c_ptr += (nx_tot-dims->nx[0]) * sizeof(f64);
@@ -345,7 +348,6 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     u32 offset = 0;
     for (u32 t = 0; t < N; ++t) {
         wrk->u[t] = u_memory + offset;
-        wrk->eta[t] = eta_memory + offset;
         offset += dims->nu[t];
     }
     offset = 0;
@@ -479,8 +481,6 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     wrk->singular = 0;
 
     daocp_solve_riccati(wrk, qp);
-    for (u32 t = 0; t < N; ++t)
-        wrk->eta[t] = eta_memory + wrk->crho[t];
     daocp_solve_lqr(wrk, qp);
 }
 

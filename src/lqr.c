@@ -99,6 +99,9 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
     // Compute prexif sum of equality constraints.
     daocp_compute_prefix_sum(wrk->crho, wrk->rho, N);
     wrk->neta = wrk->crho[N-1] + wrk->rho[N-1];
+    // Initialize eta pointers;
+    f64* memory = wrk->eta[0];
+    for (u32 t=1; t<N; ++t) wrk->eta[t] = memory + wrk->crho[t];
 }
 
 void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
