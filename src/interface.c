@@ -238,7 +238,7 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
         size += 2 * blasfeo_memsize_dvec(dims->nu[t]);
     }
     size += blasfeo_memsize_dvec(dims->nx[N]);
-    size += 2 * blasfeo_memsize_dvec(max_nx);
+    size += 2 * blasfeo_memsize_dvec(DAOCP_MAX(max_nx, max_nu)); // lqr temporary vectors
 
     return size;
 }
@@ -467,7 +467,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     blasfeo_create_dvec(dims->nx[N], wrk->ux_lqr + N, c_ptr);
     c_ptr += blasfeo_memsize_dvec(dims->nx[N]);
     blasfeo_create_dvec(max_nx, &wrk->costate0, c_ptr);
-    c_ptr += blasfeo_memsize_dvec(max_nx);
+    c_ptr += blasfeo_memsize_dvec(DAOCP_MAX(max_nx, max_nu));
     blasfeo_create_dvec(max_nx, &wrk->costate1, c_ptr);
 
     wrk->dims = &qp->dims;
