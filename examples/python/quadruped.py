@@ -96,7 +96,5 @@ def solve_mpc():
         print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
         print()
 
-    print(f"\nFinal state:\n{state}")
-
 if __name__ == '__main__':
     solve_mpc()
