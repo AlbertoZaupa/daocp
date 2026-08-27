@@ -73,4 +73,4 @@ def solve_mpc():
     print(f"\nFinal state:\n{state}")
 
 if __name__ == '__main__':
-    solve_ocp()
+    solve_mpc()

@@ -83,5 +83,20 @@ def time_ocp():
         total += res.info.solve_time    
     print(f"Average solve time: {(total/nreps):3f} us.")
 
+def solve_mpc():
+    solver = OCPsolver(A, B, None, Ql, R, None,
+                        None, None, None, None, lbu, ubu,
+                        C, c_l, c_u,
+                        dx0, N, nx, nu, max_iter)
+    for t in range(300):
+        state = dX[t*nx:(t+1)*nx]
+        solver.update(state)
+        res = solver.solve()
+        assert res.info.status == "SOLVED", res.info.status
+        print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
+        print()
+
+    print(f"\nFinal state:\n{state}")
+
 if __name__ == '__main__':
-    solve_ocp()
+    solve_mpc()
