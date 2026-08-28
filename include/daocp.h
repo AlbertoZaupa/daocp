@@ -53,6 +53,8 @@ typedef enum {
 typedef struct {
     u32 max_iter;
     daocp_selection selection;
+    f64 primal_tol;
+    f64 dual_tol;
 } daocp_args;
 
 // DAOCP EXIT STATUS

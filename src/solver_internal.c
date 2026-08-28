@@ -1,12 +1,12 @@
 #include <internal.h>
 #include <math.h>
 
-u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp) {
+u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
     daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims.nx[0], qp->dims.nx[0]);
     for (u32 i=0; i<wrk->nH0; ++i)
-        if (DAOCP_ABS(wrk->tmp1[i]) > DAOCP_ZERO_TOL) return 1;
+        if (DAOCP_ABS(wrk->tmp1[i]) > args->primal_tol) return 1;
     return 0;
 }
 
@@ -25,12 +25,12 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk) {
     daocp_trsv_t(wrk->p, wrk->Ld, n_active, wrk->W_stride);
 }
 
-u32 daocp_is_dual_feasible(f64* p, u32* sign, u32 n) {
+u32 daocp_is_dual_feasible(daocp_args* args, f64* p, u32* sign, u32 n) {
     /*
         Check that all components have the right sign.   
     */
     for (u32 i=0; i<n; ++i) {
-        if ((sign[i] == 0 && p[i] > DAOCP_ZERO_TOL) || (sign[i] == 1 && p[i] < -DAOCP_ZERO_TOL))
+        if ((sign[i] == 0 && p[i] > args->dual_tol) || (sign[i] == 1 && p[i] < -args->dual_tol))
             return 0;
     }
     return 1;
@@ -90,9 +90,9 @@ static inline void populate_constraint_struct(daocp_constraint* constr, u32 t, u
 }
 
 static inline u32 check_bounds_at_t(
-    daocp_workspace* wrk, u32 t, u32 nb, u32* idxb,
-    f64* v, f64* lb, f64* ub, u32 is_state, 
-    daocp_constraint* constr
+    daocp_workspace* wrk, daocp_args* args, 
+    u32 t, u32 nb, u32* idxb, f64* v, f64* lb, 
+    f64* ub, u32 is_state, daocp_constraint* constr
 ) {
     daocp_constraint_type type = is_state ? DAOCP_BOUND_X : DAOCP_BOUND_U;
     for (u32 i=0; i<nb; ++i) {
@@ -101,8 +101,8 @@ static inline u32 check_bounds_at_t(
         f64 uval = v[idx];
         f64 tmp1 = uval - ub[i];
         f64 tmp2 = lb[i] - uval;
-        if (tmp1 > DAOCP_ZERO_TOL || tmp2 > DAOCP_ZERO_TOL) {
-            populate_constraint_struct(constr, t, i, type, tmp1 > DAOCP_ZERO_TOL ? 1 : 0);
+        if (tmp1 > args->primal_tol || tmp2 > args->primal_tol) {
+            populate_constraint_struct(constr, t, i, type, tmp1 > args->primal_tol ? 1 : 0);
             return 1;
         }
     }
@@ -110,7 +110,8 @@ static inline u32 check_bounds_at_t(
 }
 
 static inline u32 check_constraints_at_t(
-    daocp_workspace* wrk, u32 t, u32 nc, u32 nx, u32 nu, 
+    daocp_workspace* wrk, daocp_args* args,
+    u32 t, u32 nc, u32 nx, u32 nu, 
     daocp_constraint_type* types, f64* Cx, f64* Cu, 
     f64* x, f64* u, f64* lb, f64* ub, daocp_constraint* constr
 ) {
@@ -128,15 +129,17 @@ static inline u32 check_constraints_at_t(
         }
         f64 tmp1 = val - ub[i];
         f64 tmp2 = lb[i] - val;
-        if (tmp1 > DAOCP_ZERO_TOL || tmp2 > DAOCP_ZERO_TOL) {
-            populate_constraint_struct(constr, t, i, types[i], tmp1 > DAOCP_ZERO_TOL ? 1 : 0);
+        if (tmp1 > args->primal_tol || tmp2 > args->primal_tol) {
+            populate_constraint_struct(constr, t, i, types[i], tmp1 > args->primal_tol ? 1 : 0);
             return 1;
         }
     }
     return 0;
 }
 
-void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+void daocp_selection_greedy(
+    daocp_workspace* wrk, daocp_qp* qp, 
+    daocp_args* args, daocp_constraint* violated) {
     u32 N = qp->dims.N;
     daocp_constraint_type** contypes = wrk->contypes;
     u32* nx = qp->dims.nx; u32* nu = qp->dims.nu; 
@@ -163,13 +166,13 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
     v0.pa = u[0]; v1.pa = eta[0];
     blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
     DAOCP_TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
-    if (check_bounds_at_t(wrk, 0, nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
+    if (check_bounds_at_t(wrk, args, 0, nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
         return;
-    if (check_constraints_at_t(wrk, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
+    if (check_constraints_at_t(wrk, args, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
     // State evolution
     v1.pa = x[1];
     blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-    if (check_bounds_at_t(wrk, 1, qp->dims.nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated)) 
+    if (check_bounds_at_t(wrk, args, 1, qp->dims.nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated))
         return;
 
     for (u32 t=1; t<N; ++t) {
@@ -182,10 +185,10 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
         DAOCP_TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
         // Check control bounds
-        if (check_bounds_at_t(wrk, t, nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated)) 
+        if (check_bounds_at_t(wrk, args, t, nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated))
             return;
         // Check constraints at t
-        if (check_constraints_at_t(wrk, t, ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated)) 
+        if (check_constraints_at_t(wrk, args, t, ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated))
             return; 
 
         // Propagate state dynamics
@@ -195,15 +198,17 @@ void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint
         blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
 
         // Check state bounds
-        if (check_bounds_at_t(wrk, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated)) 
+        if (check_bounds_at_t(wrk, args, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated))
             return;
     }
 
     // Check constraints on terminal state
-    check_constraints_at_t(wrk, N, ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
+    check_constraints_at_t(wrk, args, N, ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
 }
 
-void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+void daocp_selection_most_violated(
+    daocp_workspace* wrk, daocp_qp* qp, 
+    daocp_args* args, daocp_constraint* violated) {
     u32 N = qp->dims.N;
     daocp_constraint_type** contypes = wrk->contypes;
     u32* nx = qp->dims.nx; u32* nu = qp->dims.nu;
@@ -251,7 +256,7 @@ void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_con
     }
 
     // Find the inactive constraint with the largest violation.
-    f64 max_violation = DAOCP_ZERO_TOL;
+    f64 max_violation = args->primal_tol;
     violated->t = N+1;
     for (u32 t=0; t<=N; ++t) {
         if (t < N) {

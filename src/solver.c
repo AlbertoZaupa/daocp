@@ -5,13 +5,13 @@ void daocp_solve(
     daocp_sol* sol
 ) {
     daocp_workspace* wrk = (daocp_workspace*) ws;
-    void (*selection_handle)(daocp_workspace*, daocp_qp*, daocp_constraint*) = 
+    void (*selection_handle)(daocp_workspace*, daocp_qp*, daocp_constraint*, f64) =
         args->selection == DAOCP_SELECT_GREEDY ? daocp_selection_greedy 
         : daocp_selection_most_violated;
     u32 status_set = 0;
 
     // Check feasibility on x0
-    if (daocp_check_x0_feasibility(wrk, qp)) {
+    if (daocp_check_x0_feasibility(wrk, qp, args)) {
         wrk->status = DAOCP_INFEASIBLE;
         wrk->iters = 0;
         // Set ux to the lqr solution and return
@@ -25,12 +25,12 @@ void daocp_solve(
         if (!wrk->singular) {
             // Solve H_W p = -g_W
             daocp_solve_dual_eqcon_qp(wrk);
-            if (daocp_is_dual_feasible(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
+            if (daocp_is_dual_feasible(args, wrk->p, wrk->xi_sign, wrk->as.n_active)) {
                 // If p is dual feasible, xi = p
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
                 // Add a primal-violated constraint, if it exists
                 daocp_constraint violated;
-                selection_handle(wrk, qp, &violated);
+                selection_handle(wrk, qp, &violated, args->primal_tol);
                 if (violated.t > qp->dims.N) {
                     wrk->status = DAOCP_SOLVED;
                     wrk->iters = k;
