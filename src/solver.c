@@ -5,7 +5,7 @@ void daocp_solve(
     daocp_sol* sol
 ) {
     daocp_workspace* wrk = (daocp_workspace*) ws;
-    void (*selection_handle)(daocp_workspace*, daocp_qp*, daocp_constraint*, f64) =
+    void (*selection_handle)(daocp_workspace*, daocp_qp*, daocp_args* args, daocp_constraint* ) =
         args->selection == DAOCP_SELECT_GREEDY ? daocp_selection_greedy 
         : daocp_selection_most_violated;
     u32 status_set = 0;
@@ -30,7 +30,7 @@ void daocp_solve(
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
                 // Add a primal-violated constraint, if it exists
                 daocp_constraint violated;
-                selection_handle(wrk, qp, &violated, args->primal_tol);
+                selection_handle(wrk, qp, args, &violated);
                 if (violated.t > qp->dims.N) {
                     wrk->status = DAOCP_SOLVED;
                     wrk->iters = k;
