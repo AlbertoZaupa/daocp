@@ -415,6 +415,7 @@ struct SolveResult {
 
 class OCPsolver {
 public:
+    f64 setup_time;
     OCPsolver(py::object A, py::object B, py::object w,
               py::object Q, py::object R, py::object S,
               py::object q, py::object r,
@@ -422,13 +423,15 @@ public:
               py::object lbu, py::object ubu,
               py::object C, py::object c_l, py::object c_u,
               py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter,
-              bool greedy)
+              bool greedy, f64 pr_tol, f64 du_tol)
         : N_(N), nx_(nx), nu_(nu),
           nx_dims_(N + 1, nx), nu_dims_(N + 1, nu),
           nbu_dims_(N + 1, 0), nbx_dims_(N + 1, 0),
           ng_dims_(N + 1, 0), ne_dims_(N + 1, 0) {
         if (!N || !nx || !nu || !max_iter)
             throw py::value_error("N, nx, nu, and max_iter must be positive");
+        if (pr_tol <= 0 || du_tol <= 0) 
+            throw py::value_error("pr_tol and du_tol must be positive");
         nu_dims_[N] = 0;
 
         Array Ap = horizon_array(A, "A", N, {nx, nx}, true);
@@ -528,13 +531,18 @@ public:
         daocp_qp_memory_assign(&dims_, &qp_, qp_memory_.data());
         populate_qp(Ap, Bp, wp, Qp, Rp, Sp, qp, rp);
         workspace_memory_.resize(daocp_workspace_memsize(&dims_));
+        auto start = std::chrono::high_resolution_clock::now();
         daocp_workspace_memory_assign(&dims_, &qp_, workspace_memory_.data());
+        auto end = std::chrono::high_resolution_clock::now();
+        setup_time = std::chrono::duration<f64, std::micro>(end - start).count();
         solution_memory_.resize(daocp_sol_memsize(&dims_));
         daocp_sol_memory_assign(&dims_, &solution_, solution_memory_.data());
 
         daocp_args_set_default(&args_);
         args_.max_iter = max_iter;
         args_.selection = greedy ? DAOCP_SELECT_GREEDY : DAOCP_SELECT_MOST_VIOLATED;
+        args_.primal_tol = pr_tol; 
+        args_.dual_tol = du_tol;
         q_.assign(qp.data(), qp.data() + qp.size());
         r_.assign(rp.data(), rp.data() + rp.size());
         rebuild_linear_descriptors();
@@ -735,13 +743,15 @@ PYBIND11_MODULE(daocp, module) {
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, u32, u32, u32, u32, bool>(),
+                      py::object, u32, u32, u32, u32, bool, f64, f64>(),
              py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"),
              py::arg("R"), py::arg("S"), py::arg("q"), py::arg("r"),
              py::arg("lbx"), py::arg("ubx"), py::arg("lbu"), py::arg("ubu"),
              py::arg("C"), py::arg("c_l"), py::arg("c_u"), py::arg("x0"),
              py::arg("N"), py::arg("nx"), py::arg("nu"), py::arg("max_iter") = 1000,
-             py::arg("greedy") = true)
+             py::arg("greedy") = true, py::arg("pr_tol") = 1e-8,
+             py::arg("du_tol") = 1e-8)
+        .def_readwrite("setup_time", &OCPsolver::setup_time)
         .def("solve", &OCPsolver::solve)
         .def("update", &OCPsolver::update,
              py::arg("x0"), py::arg("q") = py::none(), py::arg("r") = py::none());

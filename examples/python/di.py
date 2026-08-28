@@ -31,6 +31,7 @@ def solve_ocp():
                         None, None, lbx, ubx, lbu, ubu,
                         None, None, None,
                         x0, N, nx, nu, max_iter)
+    print(f"Setup time: {solver.setup_time:.3e} us")
     res = solver.solve()
     assert res.info.status == "SOLVED"
     primal_violation = check_primal_feasibility(
