@@ -70,7 +70,5 @@ def solve_mpc():
         solver.update(state)
         print()
 
-    print(f"\nFinal state:\n{state}")
-
 if __name__ == '__main__':
     solve_mpc()
