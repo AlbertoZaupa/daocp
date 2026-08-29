@@ -3,3 +3,4 @@ config.mk
 lib/*
 build/*
 examples/python/__pycache__/*
+.vscode
