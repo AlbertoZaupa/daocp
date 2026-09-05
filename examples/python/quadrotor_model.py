@@ -48,11 +48,13 @@ Qu = np.full(nu, 6.)                    # rotor thrusts
 w_max = np.full(3, 10.0)                # rad/s
 
 def q_to_rot(q):
+    """Rotation matrix of a quaternion, in the form that stays exact when the
+    quaternion is not normalized, as it is inside an integration step."""
     qw, qx, qy, qz = q
     return np.array([
-        [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
-        [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
-        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]])
+        [qw**2 + qx**2 - qy**2 - qz**2, 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+        [2*(qx*qy + qw*qz), qw**2 - qx**2 + qy**2 - qz**2, 2*(qy*qz - qw*qx)],
+        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), qw**2 - qx**2 - qy**2 + qz**2]])
 
 def q_mult(q, p):
     qw, qx, qy, qz = q
@@ -93,30 +95,61 @@ def q_error_jacobian(q_r):
                      [py, -pz, pw, px],
                      [pz, py, -px, pw]])
 
-def f(x, u):
-    """Continuous-time dynamics, eqs. (1) to (5) and (9)."""
+def dynamics(x, u, drag=1.0):
+    """Continuous-time dynamics, eqs. (1) to (5) and (9).
+
+    drag scales the aerodynamic force: the simulated vehicle of Table IV is
+    flown with more drag than the model of the controller assumes.
+    """
     v = x[3:6]
     q = x[6:10]
     w = x[10:]
     R = q_to_rot(q)
     v_b = R.T @ v
-    f_a = np.array([-kd[0] * v_b[0], -kd[1] * v_b[1],
-                    -kd[2] * v_b[2] + kh * (v_b[0]**2 + v_b[1]**2)])
+    f_a = drag * np.array([-kd[0] * v_b[0], -kd[1] * v_b[1],
+                           -kd[2] * v_b[2] + kh * (v_b[0]**2 + v_b[1]**2)])
     thrust_torque = G1 @ u
     acc = R @ (np.array([0, 0, thrust_torque[0]]) + f_a) / mass - np.array([0, 0, g])
     dq = 0.5 * q_mult(q, np.concatenate([[0.0], w]))
     dw = (thrust_torque[1:] - np.cross(w, Iv * w)) / Iv
     return np.concatenate([v, acc, dq, dw])
 
-h = lambda x, u, dt=Ts: rk4(f, x, u, dt)
+f = lambda x, u: dynamics(x, u)             # model used by the controller
+h = lambda x, u, dt=Ts: rk4(f, x, u, dt)    # one node of the prediction
 
-def simulate(x, u, dt=control_dt):
+def simulate(x, u, dt=control_dt, drag=1.0):
     """Advance the simulated quadrotor by dt, holding the rotor thrusts."""
     u = np.clip(u, u_min, u_max)
+    plant = lambda x, u: dynamics(x, u, drag)
     for i in range(int(round(dt / sim_dt))):
-        x = rk4(f, x, u, sim_dt)
+        x = rk4(plant, x, u, sim_dt)
         x[6:10] = unit_q(x[6:10])
     return x
+
+def yaw_rotate(x, angle):
+    """Rotate a state about the vertical axis.
+
+    The model, the cost of Table I and the bounds are all invariant under this
+    rotation, which is what makes a circular reference a steady state.
+    """
+    c, s = np.cos(angle), np.sin(angle)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    q_z = np.array([np.cos(angle / 2), 0.0, 0.0, np.sin(angle / 2)])
+    return np.concatenate([R @ x[:3], R @ x[3:6], q_mult(q_z, x[6:10]), x[10:]])
+
+def circular_reference(a_max, v_max):
+    """Steady state of the circular reference of eqs. (36) to (38) with n = 1.
+
+    Returns the state and rotor thrusts of the reference at zero phase and the
+    rate at which its phase advances: the reference at time t is the returned
+    state rotated by yaw_rotate(., rate * t).
+    """
+    rate = -a_max / v_max
+    period = 2 * np.pi / abs(rate)
+    x_ref, u_ref = ellipse_trajectory(control_dt, a_max, v_max, 1, period)
+    middle = len(u_ref) // 2
+    x_bar = yaw_rotate(x_ref[middle], -rate * middle * control_dt)
+    return x_bar, u_ref[middle], rate
 
 def ellipse_trajectory(dt, a_max, v_max, n, duration, vertical=False, refine=10):
     """Reference of eqs. (36) to (38), with the states and rotor thrusts that fly it.
