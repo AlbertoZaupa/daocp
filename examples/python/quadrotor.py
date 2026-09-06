@@ -58,7 +58,7 @@ def deviation(state, phase):
 def make_solver(dx0):
     return OCPsolver(A, B, w, Q, R, None, None, None, lbx, ubx, lbu, ubu,
                         None, None, None,
-                        dx0, N, nx, nu, max_iter)
+                        dx0, N, nx, nu, max_iter, greedy=False)
 
 def solve_ocp():
     # The first step of the flight, where the quadrotor still hovers at the
@@ -94,6 +94,7 @@ def solve_mpc():
     iters = np.zeros(K)
     times = np.zeros(K)
     for k in range(K):
+        if k >= 200: exit(0)
         phase = rate * k * control_dt
         solver.update(deviation(state, phase))
         res = solver.solve()
@@ -112,4 +113,4 @@ def solve_mpc():
     print(f"Solve time: mean {times.mean():.3f} us, max {times.max():.3f} us")
 
 if __name__ == '__main__':
-    solve_ocp()
+    solve_mpc()
