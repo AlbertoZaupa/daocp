@@ -13,6 +13,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
 
     // Initialize recursion
     blasfeo_dgecp(nx[N], nx[N], qp->RSQrq+N, 0, 0, wrk->P+N-1, 0, 0);
+    blasfeo_dtrtr_l(nx[N], wrk->P+N-1, 0, 0, wrk->P+N-1, 0, 0);
     u32 neq_x0 = qp->dims.ne[N];
     f64* tmp = H;
     for (u32 i=0; i<neq_x0; ++i) {
