@@ -58,18 +58,27 @@ def time_ocp():
     print(f"Average solve time: {(total/nreps):3f} us")
 
 def solve_mpc():
-    solver = OCPsolver(A, B, None, Ql, R, None,
+    nruns = 20
+    nsteps = 300
+    timing = np.zeros(nsteps)
+    for run in range(nruns):
+        solver = OCPsolver(A, B, None, Ql, R, None,
                         None, None, None, None, lbu, ubu,
                         None, None, None,
                         dx0, N, nx, nu, max_iter)
-    state = dx0.copy()
-    for t in range(300):
-        res = solver.solve()
-        assert res.info.status == "SOLVED", res.info.status
-        print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
-        state = A @ state + B @ np.clip(res.u[0], lb, ub)
-        solver.update(state)
-        print()
+        state = dx0.copy()
+        for t in range(nsteps):
+            res = solver.solve()
+            assert res.info.status == "SOLVED", res.info.status
+            if nruns == 1:
+                print(f"Timestep {t}. Iters: {res.info.iters}. Solve time: {res.info.solve_time:.3f} us.")
+            timing[t] += res.info.solve_time
+            state = A @ state + B @ np.clip(res.u[0], lb, ub)
+            solver.update(state)
+            
+    timing /= nruns
+    print(f"Average solve time: {np.mean(timing):.4f} us.")
+    print(f"Maximum solve time: {np.max(timing):.4f} us.")
 
 if __name__ == '__main__':
-    solve_ocp()
+    solve_mpc()
