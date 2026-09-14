@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Alberto Zaupa
+# SPDX-License-Identifier: MIT
+# See LICENSE in the project root for license information.
+
 PYTHON ?= $(shell command -v python >/dev/null 2>&1 && echo python || echo python3)
 CC ?= cc
 AR ?= ar

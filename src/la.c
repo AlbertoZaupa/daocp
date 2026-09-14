@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Alberto Zaupa
+ * SPDX-License-Identifier: MIT
+ * See LICENSE in the project root for license information.
+ */
+
 #include <internal.h>
 #include <blasfeo.h>
 #define DAOCP_GE_ZERO_TOL 1e-7

@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Alberto Zaupa
+ * SPDX-License-Identifier: MIT
+ * See LICENSE in the project root for license information.
+ */
+
 #include <internal.h>
 #include <math.h>
 
