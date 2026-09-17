@@ -83,7 +83,7 @@ void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     }
 
     // Handle two of the remaining rows, then the final odd row.
-    if (ny % 4) {
+    if (ny - ((ny>>2)<<2) >= 2) {
         f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
         f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
         if (nx >= 4) {
@@ -114,7 +114,7 @@ void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
         A += 2*stride;
         y += 2;
     }
-    if (ny % 2) {
+    if (ny - ((ny>>1)<<1) >= 1) {
         f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
         if (nx >= 4) {
             for (u32 j=0; j<=nx-4; j+=4) {
@@ -192,7 +192,7 @@ void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     }
 
     // Handle two of the remaining rows, then the final odd row.
-    if (ny % 4) {
+    if (ny - ((ny>>2)<<2) >= 2) {
         f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
         f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
         if (nx >= 4) {
@@ -223,7 +223,7 @@ void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
         A += 2*stride;
         y += 2;
     }
-    if (ny % 2) {
+    if (ny - ((ny>>1)<<1) >= 1) {
         f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
         if (nx >= 4) {
             for (u32 j=0; j<=nx-4; j+=4) {
