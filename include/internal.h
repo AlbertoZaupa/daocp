@@ -141,8 +141,9 @@ void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);
+void daocp_daxpy(const f64* x, f64* y, f64 a, u32 n);
 void daocp_negate(f64* v, u32 n);
-f64 daocp_dot(f64* v, f64* w, u32 n);
+f64 daocp_dot(const f64* v, const f64* w, u32 n);
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2);
 void daocp_compute_prefix_sum(u32* ca, u32* a, u32 n);
 

@@ -9,18 +9,21 @@
 #define DAOCP_GE_ZERO_TOL 1e-7
 
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride) {
-    for (u32 i=0; i<n; ++i) {
+    if (n==0) return;
+
+    x[0] *= L[0];
+    for (u32 i=1; i<n; ++i) {
+        x[i] -= daocp_dot(L + i*stride, x, i);
         x[i] *= L[i*stride + i];
-        for (u32 j=i+1; j<n; ++j) x[j] -= L[j*stride + i] * x[i];
     }
 }
 
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride) {
     for (i32 i=n-1; i>=0; --i) {
         x[i] *= L[i*stride + i];
-        for (i32 j=i-1; j>=0; --j) x[j] -= L[i*stride + j] * x[i];
+        daocp_daxpy(L + i*stride, x, -x[i], i);
     }
-}
+} 
 
 void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     struct blasfeo_dvec v0;
@@ -93,12 +96,99 @@ u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 
     return rho;
 }
 
-void daocp_negate(f64* v, u32 n) {
-    for (u32 i=0; i<n; ++i) v[i] *= -1.0;
+void daocp_daxpy(const f64* __restrict__ x, f64* __restrict__ y, f64 a, u32 n) {
+    if (n==0) return;
+
+    // Vectorization width = 4. This allows the cpu to use maximum-width simd,
+    // thereby reducing load pressure => higher bandwidth.
+    // Increasing width to 8 may reduce frontend pressure, but less clearly advantageous.
+    if (n>=4) {
+        for (i32 i=0; i<=n-4; i+=4) {
+            y[0] += x[0] * a;
+            y[1] += x[1] * a;
+            y[2] += x[2] * a;
+            y[3] += x[3] * a;
+            x += 4; y += 4;
+        }
+    }
+    if (n - ((n>>2)<<2) >= 2) {
+        y[0] += x[0] * a;
+        y[1] += x[1] * a;
+        x += 2; y += 2;
+    }
+    if (n - ((n>>1)<<1) >= 1) y[0] += x[0] * a;
 }
 
-f64 daocp_dot(f64* v, f64* w, u32 n) {
-    f64 acc = 0.0;
-    for (u32 i=0; i<n; ++i) acc += v[i] * w[i];
-    return acc;
+void daocp_negate(f64* v, u32 n) {
+    if (n==0) return;
+
+    // Vectorization width = 4. This allows the cpu to use maximum-width simd,
+    // thereby reducing load pressure => higher bandwidth.
+    // Increasing width to 8 may reduce frontend pressure, but less clearly advantageous.
+    if (n >= 4) {
+        for (i32 i=0; i<=n-4; i+=4) {
+            v[0] *= -1.0;
+            v[1] *= -1.0;
+            v[2] *= -1.0;
+            v[3] *= -1.0;
+            v += 4;
+        }
+    }
+    if (n - ((n>>2)<<2) >= 2) {
+        v[0] *= -1.0;
+        v[1] *= -1.0;
+        v += 2;
+    }
+    if (n - ((n>>1)<<1) >= 1) {
+        v[0] *= -1.0;
+    }
+}
+
+f64 daocp_dot(const f64* __restrict__ v, const f64* __restrict__ w, u32 n) {
+    if (n==0) return 0.0;
+
+    // 8 accumulators to reduce length of dependency chain from n to n/8 + 3.
+    f64 acc0 = 0;
+    f64 acc1 = 0;
+    f64 acc2 = 0;
+    f64 acc3 = 0;
+    f64 acc4 = 0;
+    f64 acc5 = 0;
+    f64 acc6 = 0;
+    f64 acc7 = 0;
+
+    if (n>=8) {
+        for (i32 i=0; i<=n-8; i+=8) {
+            acc0 += v[0] * w[0];
+            acc1 += v[1] * w[1];
+            acc2 += v[2] * w[2];
+            acc3 += v[3] * w[3];
+            acc4 += v[4] * w[4];
+            acc5 += v[5] * w[5];
+            acc6 += v[6] * w[6];
+            acc7 += v[7] * w[7];
+            v += 8; w += 8;
+        }
+    }
+    if (n - ((n>>3)<<3) >= 4) {
+        acc0 += v[0] * w[0];
+        acc1 += v[1] * w[1];
+        acc3 += v[2] * w[2];
+        acc4 += v[3] * w[3];
+        v += 4; w += 4;
+    }
+    if (n - ((n>>2)<<2) >= 2) {
+        acc0 += v[0]*w[0];
+        acc1 += v[1]*w[1];
+        v += 2; w += 2;
+    }
+    if (n - ((n>>1)<<1)) acc0 += v[0]*w[0]; 
+
+    acc0 += acc2;
+    acc1 += acc3;
+    acc4 += acc6;
+    acc5 += acc7;
+    acc0 += acc1;
+    acc4 += acc5;
+    return acc0 + acc4;
 }
