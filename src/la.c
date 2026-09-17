@@ -27,7 +27,7 @@ void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride) {
 
 void daocp_fma_mv(
     f64* __restrict__ y, const f64* __restrict__ A, 
-    const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {
+    const f64* __restrict__ x, f64 alpha, u32 ny, u32 nx, u32 stride) {
     if (ny == 0 || nx == 0) return;
 
     // We maintain a grid of 16 (scalar) accumulators. This gives a decent amount
@@ -75,10 +75,10 @@ void daocp_fma_mv(
             a10 += a12; a11 += a13;
             a20 += a22; a21 += a23;
             a30 += a32; a31 += a33;
-            y[0] += a00 + a01;
-            y[1] += a10 + a11;
-            y[2] += a20 + a21;
-            y[3] += a30 + a31;
+            y[0] += alpha * (a00 + a01);
+            y[1] += alpha * (a10 + a11);
+            y[2] += alpha * (a20 + a21);
+            y[3] += alpha * (a30 + a31);
             A += 4*stride;
             y += 4;
         }
@@ -111,8 +111,8 @@ void daocp_fma_mv(
         }
         a00 += a02; a01 += a03;
         a10 += a12; a11 += a13;
-        y[0] += a00 + a01;
-        y[1] += a10 + a11;
+        y[0] += alpha * (a00 + a01);
+        y[1] += alpha * (a10 + a11);
         A += 2*stride;
         y += 2;
     }
@@ -132,118 +132,7 @@ void daocp_fma_mv(
         nx_mod = (nx>>1)<<1;
         if (nx > nx_mod) a00 += A[nx_mod]*x[nx_mod];
         a00 += a02; a01 += a03;
-        y[0] += a00 + a01;
-    }
-}
-
-void daocp_fms_mv(
-    f64* __restrict__ y, const f64* __restrict__ A, 
-    const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {
-    if (ny == 0 || nx == 0) return;
-
-    // We maintain a grid of 16 (scalar) accumulators. This gives a decent amount
-    // of parallelism.
-    f64 x0, x1, x2, x3;
-
-    if (ny >= 4) {
-        for (u32 i=0; i<=ny-4; i+=4) {
-            f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
-            f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
-            f64 a20 = 0; f64 a21 = 0; f64 a22 = 0; f64 a23 = 0;
-            f64 a30 = 0; f64 a31 = 0; f64 a32 = 0; f64 a33 = 0;
-            // Accumulate dot products
-            if (nx >= 4) {
-                for (u32 j=0; j<=nx-4; j+=4) {
-                    x0 = x[j]; x1 = x[j+1]; x2 = x[j+2]; x3 = x[j+3];
-                    a00 += A[j]*x0; a01 += A[j+1]*x1; a02 += A[j+2]*x2; a03 += A[j+3]*x3;
-                    a10 += A[stride + j]*x0; a11 += A[stride+j+1]*x1;
-                    a12 += A[stride+j+2]*x2; a13 += A[stride+j+3]*x3;
-                    a20 += A[2*stride + j]*x0; a21 += A[2*stride+j+1]*x1;
-                    a22 += A[2*stride+j+2]*x2; a23 += A[2*stride+j+3]*x3;
-                    a30 += A[3*stride + j]*x0; a31 += A[3*stride+j+1]*x1;
-                    a32 += A[3*stride+j+2]*x2; a33 += A[3*stride+j+3]*x3;
-                }
-            }
-            u32 nx_mod = (nx>>2)<<2;
-            if (nx - nx_mod >= 2) {
-                x0 = x[nx_mod]; x1 = x[nx_mod+1];
-                a00 += A[nx_mod]*x0; a01 += A[nx_mod+1]*x1;
-                a10 += A[stride + nx_mod]*x0; a11 += A[stride+nx_mod+1]*x1;
-                a20 += A[2*stride + nx_mod]*x0; a21 += A[2*stride+nx_mod+1]*x1;
-                a30 += A[3*stride + nx_mod]*x0; a31 += A[3*stride+nx_mod+1]*x1;
-            }
-            nx_mod = (nx>>1)<<1;
-            if (nx > nx_mod) {
-                x0 = x[nx_mod];
-                a00 += A[nx_mod]*x0;
-                a10 += A[stride + nx_mod]*x0;
-                a20 += A[2*stride + nx_mod]*x0;
-                a30 += A[3*stride + nx_mod]*x0;
-            }
-
-            // Store
-            a00 += a02; a01 += a03;
-            a10 += a12; a11 += a13;
-            a20 += a22; a21 += a23;
-            a30 += a32; a31 += a33;
-            y[0] -= a00 + a01;
-            y[1] -= a10 + a11;
-            y[2] -= a20 + a21;
-            y[3] -= a30 + a31;
-            A += 4*stride;
-            y += 4;
-        }
-    }
-
-    // Handle two of the remaining rows, then the final odd row.
-    if (ny - ((ny>>2)<<2) >= 2) {
-        f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
-        f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
-        if (nx >= 4) {
-            for (u32 j=0; j<=nx-4; j+=4) {
-                x0 = x[j]; x1 = x[j+1]; x2 = x[j+2]; x3 = x[j+3];
-                a00 += A[j]*x0; a01 += A[j+1]*x1;
-                a02 += A[j+2]*x2; a03 += A[j+3]*x3;
-                a10 += A[stride+j]*x0; a11 += A[stride+j+1]*x1;
-                a12 += A[stride+j+2]*x2; a13 += A[stride+j+3]*x3;
-            }
-        }
-        u32 nx_mod = (nx>>2)<<2;
-        if (nx - nx_mod >= 2) {
-            x0 = x[nx_mod]; x1 = x[nx_mod+1];
-            a00 += A[nx_mod]*x0; a01 += A[nx_mod+1]*x1;
-            a10 += A[stride+nx_mod]*x0; a11 += A[stride+nx_mod+1]*x1;
-        }
-        nx_mod = (nx>>1)<<1;
-        if (nx > nx_mod) {
-            x0 = x[nx_mod];
-            a00 += A[nx_mod]*x0;
-            a10 += A[stride+nx_mod]*x0;
-        }
-        a00 += a02; a01 += a03;
-        a10 += a12; a11 += a13;
-        y[0] -= a00 + a01;
-        y[1] -= a10 + a11;
-        A += 2*stride;
-        y += 2;
-    }
-    if (ny - ((ny>>1)<<1) >= 1) {
-        f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
-        if (nx >= 4) {
-            for (u32 j=0; j<=nx-4; j+=4) {
-                a00 += A[j]*x[j]; a01 += A[j+1]*x[j+1];
-                a02 += A[j+2]*x[j+2]; a03 += A[j+3]*x[j+3];
-            }
-        }
-        u32 nx_mod = (nx>>2)<<2;
-        if (nx - nx_mod >= 2) {
-            a00 += A[nx_mod]*x[nx_mod];
-            a01 += A[nx_mod+1]*x[nx_mod+1];
-        }
-        nx_mod = (nx>>1)<<1;
-        if (nx > nx_mod) a00 += A[nx_mod]*x[nx_mod];
-        a00 += a02; a01 += a03;
-        y[0] -= a00 + a01;
+        y[0] += alpha * (a00 + a01);
     }
 }
 

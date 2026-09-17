@@ -49,7 +49,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] = h[i];
         for (u32 i=0; i<nx[t+1]; ++i)
             ABtmp[i] = BLASFEO_DMATEL(qp->BAwt+t, nu[t]+nx[t], i); 
-        daocp_fms_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, ABtmp, neq_x0, nx[t+1], nx[t]+nu[t]+1);
+        daocp_fma_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, ABtmp, -1.0, neq_x0, nx[t+1], nx[t]+nu[t]+1);
 
         // Gaussian elimination
         u32 rho = wrk->rho[t] = daocp_gaussian_elimination(GEtmp, GEtmp + (ne[t]+neq_x0)*(nx[t]+nu[t]+1), ne[t]+neq_x0, nu[t], nx[t]+nu[t]+1, nu[t]);

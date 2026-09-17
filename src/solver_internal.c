@@ -10,7 +10,7 @@
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
-    daocp_fms_mv(wrk->tmp1, wrk->H, qp->x0, wrk->nH0, qp->dims.nx[0], qp->dims.nx[0]);
+    daocp_fma_mv(wrk->tmp1, wrk->H, qp->x0, -1.0, wrk->nH0, qp->dims.nx[0], qp->dims.nx[0]);
     for (u32 i=0; i<wrk->nH0; ++i)
         if (DAOCP_ABS(wrk->tmp1[i]) > args->primal_tol) return 1;
     return 0;
@@ -414,9 +414,9 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
     u32 nu_cols = wrk->cnu[wrk->as.max_t] + nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
     daocp_fma_mv(wrk->Ld + n_active*wrk->W_stride,
-           wrk->Mu, mu_ptr, n_active, nu_cols, wrk->nu_tot);
-    daocp_fms_mv(wrk->Ld + n_active*wrk->W_stride,
-           wrk->Me, me_ptr, n_active, eta_cols, wrk->neta);
+           wrk->Mu, mu_ptr, 1.0, n_active, nu_cols, wrk->nu_tot);
+    daocp_fma_mv(wrk->Ld + n_active*wrk->W_stride,
+           wrk->Me, me_ptr, -1.0, n_active, eta_cols, wrk->neta);
     struct blasfeo_dvec vu, ve;
     vu.pa = mu_ptr; ve.pa = me_ptr;
     wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, wrk->nu_tot)
