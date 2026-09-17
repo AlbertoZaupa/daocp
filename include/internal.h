@@ -138,8 +138,9 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
 }
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride);
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride);
-void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
-void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride);
+void daocp_fma_mv(f64* y, const f64* A, const f64* x, u32 ny, u32 nx, u32 stride);
+void daocp_fms_mv(f64* y, const f64* A, const f64* x, u32 ny, u32 nx, u32 stride);
+void daocp_fma_mv_t(f64* y, const f64* A, const f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);

@@ -102,4 +102,4 @@ def solve_mpc():
         print()
 
 if __name__ == '__main__':
-    solve_ocp()
+    time_ocp()

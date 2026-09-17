@@ -85,4 +85,4 @@ def solve_mpc():
     print(f"Maximum solve time: {np.max(timing):.4f} us.")
 
 if __name__ == '__main__':
-    solve_ocp()
+    time_ocp()

@@ -25,7 +25,9 @@ void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride) {
     }
 } 
 
-void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
+void daocp_fma_mv(
+    f64* __restrict__ y, const f64* __restrict__ A, 
+    const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {
     if (ny == 0 || nx == 0) return;
 
     // We maintain a grid of 16 (scalar) accumulators. This gives a decent amount
@@ -134,7 +136,9 @@ void daocp_fma_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
     }
 }
 
-void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
+void daocp_fms_mv(
+    f64* __restrict__ y, const f64* __restrict__ A, 
+    const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {
     if (ny == 0 || nx == 0) return;
 
     // We maintain a grid of 16 (scalar) accumulators. This gives a decent amount
@@ -240,6 +244,137 @@ void daocp_fms_mv(f64* y, f64* A, f64* x, u32 ny, u32 nx, u32 stride) {
         if (nx > nx_mod) a00 += A[nx_mod]*x[nx_mod];
         a00 += a02; a01 += a03;
         y[0] -= a00 + a01;
+    }
+}
+
+void daocp_fma_mv_t(
+    f64* __restrict__ y, const f64* __restrict__ A, 
+    const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {
+    if (ny == 0 || nx == 0) return;
+
+    // 8x2 grid of accumulators.
+    f64 a00; f64 a01; f64 a10; f64 a11;
+    f64 a20; f64 a21; f64 a30; f64 a31;
+    f64 a40; f64 a41; f64 a50; f64 a51;
+    f64 a60; f64 a61; f64 a70; f64 a71;
+    f64 x0, x1;
+
+    if (ny >= 8) {
+        for (i32 i=0; i<=ny-8; i+=8) {
+            // Load / Initialize
+            a00=y[0]; a01=0; a10=y[1]; a11=0;
+            a20=y[2]; a21=0; a30=y[3]; a31=0;
+            a40=y[4]; a41=0; a50=y[5]; a51=0;
+            a60=y[6]; a61=0; a70=y[7]; a71=0;
+            // Accumulate
+            if (nx >= 2) {
+                for (i32 j=0; j<=nx-2; j+=2) {
+                    x0 = x[j]; x1 = x[j+1];
+                    a00 += A[j*stride]*x0; a01 += A[(j+1)*stride]*x1;
+                    a10 += A[j*stride+1]*x0; a11 += A[(j+1)*stride+1]*x1;
+                    a20 += A[j*stride+2]*x0; a21 += A[(j+1)*stride+2]*x1;
+                    a30 += A[j*stride+3]*x0; a31 += A[(j+1)*stride+3]*x1;
+                    a40 += A[j*stride+4]*x0; a41 += A[(j+1)*stride+4]*x1;
+                    a50 += A[j*stride+5]*x0; a51 += A[(j+1)*stride+5]*x1;
+                    a60 += A[j*stride+6]*x0; a61 += A[(j+1)*stride+6]*x1;
+                    a70 += A[j*stride+7]*x0; a71 += A[(j+1)*stride+7]*x1;
+                }
+            }   
+            u32 nx_mod = (nx>>1)<<1;
+            if (nx - nx_mod >= 1) {
+                x0 = x[nx_mod];
+                a00 += A[nx_mod*stride]*x0;
+                a10 += A[nx_mod*stride+1]*x0;
+                a20 += A[nx_mod*stride+2]*x0;
+                a30 += A[nx_mod*stride+3]*x0;
+                a40 += A[nx_mod*stride+4]*x0;
+                a50 += A[nx_mod*stride+5]*x0;
+                a60 += A[nx_mod*stride+6]*x0;
+                a70 += A[nx_mod*stride+7]*x0;
+            }
+            // Store
+            a00 += a01; y[0] = a00;
+            a10 += a11; y[1] = a10;
+            a20 += a21; y[2] = a20;
+            a30 += a31; y[3] = a30; 
+            a40 += a41; y[4] = a40;
+            a50 += a51; y[5] = a50;
+            a60 += a61; y[6] = a60;
+            a70 += a71; y[7] = a70;
+            
+            A += 8; y += 8;
+        }
+    }
+
+    if (ny - ((ny>>3)<<3) >= 4) {
+        // Load / Initialize
+        a00=y[0]; a01=0; a10=y[1]; a11=0;
+        a20=y[2]; a21=0; a30=y[3]; a31=0;
+        // Accumulate
+        if (nx >= 2) {
+            for (i32 j=0; j<=nx-2; j+=2) {
+                x0 = x[j]; x1 = x[j+1];
+                a00 += A[j*stride]*x0; a01 += A[(j+1)*stride]*x1;
+                a10 += A[j*stride+1]*x0; a11 += A[(j+1)*stride+1]*x1;
+                a20 += A[j*stride+2]*x0; a21 += A[(j+1)*stride+2]*x1;
+                a30 += A[j*stride+3]*x0; a31 += A[(j+1)*stride+3]*x1;
+            }
+        }   
+        u32 nx_mod = (nx>>1)<<1;
+        if (nx - nx_mod >= 1) {
+            x0 = x[nx_mod];
+            a00 += A[nx_mod*stride]*x0;
+            a10 += A[nx_mod*stride+1]*x0;
+            a20 += A[nx_mod*stride+2]*x0;
+            a30 += A[nx_mod*stride+3]*x0;
+        }
+        // Store
+        a00 += a01; y[0] = a00;
+        a10 += a11; y[1] = a10;
+        a20 += a21; y[2] = a20;
+        a30 += a31; y[3] = a30;
+        A += 4; y += 4;
+    }
+
+    if (ny - ((ny>>2)<<2) >= 2) {
+        // Load / Initialize
+        a00=y[0]; a01=0; a10=y[1]; a11=0;
+        // Accumulate
+        if (nx >= 2) {
+            for (i32 j=0; j<=nx-2; j+=2) {
+                x0 = x[j]; x1 = x[j+1];
+                a00 += A[j*stride]*x0; a01 += A[(j+1)*stride]*x1;
+                a10 += A[j*stride+1]*x0; a11 += A[(j+1)*stride+1]*x1;
+            }
+        }   
+        u32 nx_mod = (nx>>1)<<1;
+        if (nx - nx_mod >= 1) {
+            x0 = x[nx_mod];
+            a00 += A[nx_mod*stride]*x0;
+            a10 += A[nx_mod*stride+1]*x0;
+        }
+        // Store
+        a00 += a01; y[0] = a00;
+        a10 += a11; y[1] = a10;
+        A += 2; y += 2;
+    }
+
+    if (ny - ((ny>>1)<<1) >= 1) {
+        a00=y[0]; a01=0;
+        // Accumulate
+        if (nx >= 2) {
+            for (i32 j=0; j<=nx-2; j+=2) {
+                x0 = x[j]; x1 = x[j+1];
+                a00 += A[j*stride]*x0; a01 += A[(j+1)*stride]*x1;
+            }
+        }   
+        u32 nx_mod = (nx>>1)<<1;
+        if (nx - nx_mod >= 1) {
+            x0 = x[nx_mod];
+            a00 += A[nx_mod*stride]*x0;
+        }
+        // Store
+        a00 += a01; y[0] = a00;
     }
 }
 

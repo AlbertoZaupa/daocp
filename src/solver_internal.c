@@ -80,16 +80,8 @@ static void compute_feedforwards(daocp_workspace* wrk, daocp_qp* qp) {
     // Get feedforwards (du, deta).
     u32 u_cols = wrk->cnu[wrk->as.max_t] + qp->dims.nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    v0.pa = u;
-    for (u32 i=0; i<wrk->as.n_active; ++i) {
-        v1.pa = wrk->Mu + i*wrk->nu_tot;
-        blasfeo_daxpy(u_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
-    }
-    v0.pa = eta;
-    for (u32 i=0; i<wrk->as.n_active; ++i) {
-        v1.pa = wrk->Me + i*wrk->neta;
-        blasfeo_daxpy(eta_cols, wrk->xi[i], &v1, 0, &v0, 0, &v0, 0);
-    }
+    daocp_fma_mv_t(u, wrk->Mu, wrk->xi, u_cols, wrk->as.n_active, wrk->nu_tot);
+    daocp_fma_mv_t(eta, wrk->Me, wrk->xi, eta_cols, wrk->as.n_active, wrk->neta);
 }
 
 static inline void populate_constraint_struct(daocp_constraint* constr, u32 t, u32 idx, daocp_constraint_type type, u32 is_upper) {
