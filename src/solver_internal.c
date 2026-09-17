@@ -442,8 +442,7 @@ static void update_cholesky_add(daocp_workspace* wrk) {
     if (wrk->Ld[n_active*wrk->W_stride + n_active] < DAOCP_ZERO_TOL) {
         wrk->singular = 1;
         wrk->Ld[n_active*wrk->W_stride + n_active] = 0.0;
-    }
-    wrk->Ld[n_active*wrk->W_stride + n_active] = sqrt(wrk->Ld[n_active*wrk->W_stride + n_active]);
+    } else wrk->Ld[n_active*wrk->W_stride + n_active] = 1 / sqrt(wrk->Ld[n_active*wrk->W_stride + n_active]);
 }
 
 static void daocp_update_working_set__add(daocp_workspace* wrk, daocp_constraint* constr) {
@@ -510,11 +509,11 @@ static void update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     // Perform rank1 update of bottom-right lower triangle
     f64 lii, lii_new, a, b;
     for (u32 i=idx; i<n_active-1; ++i) {
-        lii = wrk->Ld[i*W_stride+i];
-        lii_new = sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx])); 
+        lii = 1 / wrk->Ld[i*W_stride+i];
+        lii_new = 1 / sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx])); 
         wrk->Ld[i*W_stride+i] = lii_new;
-        a = l[i-idx] / lii_new;
-        b = lii / lii_new;
+        a = l[i-idx] * lii_new;
+        b = lii * lii_new;
         for (u32 j=i+1; j<n_active-1; ++j) {
             lii = l[j-idx];
             lii_new = wrk->Ld[j*W_stride + i];
@@ -669,7 +668,7 @@ u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     for (u32 i=0; i<n_active; ++i) {
         f64* lii = wrk->Ld + i*W_stride + i;
         if (*lii < DAOCP_ZERO_TOL) return 1; // Detected singularity.
-        *lii = sqrt(*lii);
+        *lii = 1 / sqrt(*lii);
         for (u32 j=i+1; j<n_active; ++j) wrk->Ld[j*W_stride + i] /= *lii;
         for (u32 j=i+1; j<n_active; ++j)
             for (u32 k=i+1; k<n_active; ++k)

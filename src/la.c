@@ -10,14 +10,14 @@
 
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride) {
     for (u32 i=0; i<n; ++i) {
-        x[i] /= L[i*stride + i];
+        x[i] *= L[i*stride + i];
         for (u32 j=i+1; j<n; ++j) x[j] -= L[j*stride + i] * x[i];
     }
 }
 
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride) {
     for (i32 i=n-1; i>=0; --i) {
-        x[i] /= L[i*stride + i];
+        x[i] *= L[i*stride + i];
         for (i32 j=i-1; j>=0; --j) x[j] -= L[i*stride + j] * x[i];
     }
 }
