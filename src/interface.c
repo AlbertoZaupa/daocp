@@ -214,11 +214,12 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     size += (N + 1) * sizeof(u32*);
 
     // Dense workspace data.
-    size += (2 * nu_tot + nx_tot - dims->nx[0]) * sizeof(f64); // u, eta, x
+    u32 max_eta = DAOCP_MIN(nu_tot, ne_tot);
+    size += (max_eta + nu_tot + nx_tot - dims->nx[0]) * sizeof(f64); // u, eta, x
     size += 2 * (nb_tot + ng_tot) * sizeof(f64);
     size += 4 * W_stride * sizeof(f64); // xi, p, dual_linear, dual_intermediate
     size += (W_stride + 1) * W_stride * sizeof(f64); // Ld
-    size += 2 * W_stride * nu_tot * sizeof(f64); // Mu, Me
+    size += W_stride * (nu_tot + max_eta) * sizeof(f64); // Mu, Me
     size += ne_tot * max_nx * sizeof(f64); // H
     size += 2 * ne_tot * sizeof(f64); // h, tmp1
     size += (ne_tot + 1) * (max_nx + max_nu + 1) * sizeof(f64); // GEtmp
@@ -292,6 +293,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     daocp_get_totals(
         dims, &nx_tot, &nu_tot, &nb_tot, &ng_tot, &ne_tot,
         &max_nx, &max_nu);
+    u32 max_eta = DAOCP_MIN(nu_tot, ne_tot);
     u32 nin = nb_tot + ng_tot;
     u32 W_stride = DAOCP_MIN(nu_tot, nin) + 1U;
     u32 max_nx_nu = DAOCP_MAX(max_nx, max_nu);
@@ -349,7 +351,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     // Only the initial pointer is set, the ramaining are populated
     // after the solution of the riccati.
     wrk->eta[0] = eta_memory; 
-    c_ptr += nu_tot * sizeof(f64);
+    c_ptr += max_eta * sizeof(f64);
     f64* x_memory = (f64*) c_ptr;
     c_ptr += (nx_tot-dims->nx[0]) * sizeof(f64);
 
@@ -365,7 +367,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
         offset += dims->nx[t];
     }
     memset(u_memory, 0, (size_t) nu_tot * sizeof(f64));
-    memset(eta_memory, 0, (size_t) nu_tot * sizeof(f64));
+    memset(eta_memory, 0, (size_t) max_eta * sizeof(f64));
     memset(x_memory, 0, (size_t) (nx_tot-dims->nx[0]) * sizeof(f64));
 
 #define DAOCP_ASSIGN_F64_ROWS(field, count, start, end) \
@@ -399,7 +401,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     wrk->Mu = (f64*) c_ptr;
     c_ptr += (size_t) W_stride * nu_tot * sizeof(f64);
     wrk->Me = (f64*) c_ptr;
-    c_ptr += (size_t) W_stride * nu_tot * sizeof(f64);
+    c_ptr += (size_t) W_stride * max_eta * sizeof(f64);
     wrk->H = (f64*) c_ptr;
     c_ptr += (size_t) ne_tot * max_nx * sizeof(f64);
     wrk->h = (f64*) c_ptr;
