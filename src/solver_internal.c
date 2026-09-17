@@ -125,17 +125,14 @@ static inline u32 check_constraints_at_t(
     daocp_constraint_type* types, f64* Cx, f64* Cu, 
     f64* x, f64* u, f64* lb, f64* ub, daocp_constraint* constr
 ) {
-    struct blasfeo_dvec v0, v1;
     for (u32 i=0; i<nc; ++i) {
         if (daocp_is_active(wrk, t, i, types[i])) continue;
         f64 val = 0;
         if (types[i] == DAOCP_ONLY_U || types[i] == DAOCP_MIXED) {
-            v0.pa = Cu+i*nu; v1.pa = u;
-            val += blasfeo_ddot(nu, &v0, 0, &v1, 0);
+            val += daocp_dot(Cu+i*nu, u, nu); 
         }
         if (types[i] == DAOCP_ONLY_X || types[i] == DAOCP_MIXED) {
-            v0.pa = Cx+i*nx; v1.pa = x;
-            val += blasfeo_ddot(nx, &v0, 0, &v1, 0);
+            val += daocp_dot(Cx+i*nx, x, nx); 
         }
         f64 tmp1 = val - ub[i];
         f64 tmp2 = lb[i] - val;
@@ -314,12 +311,10 @@ void daocp_selection_most_violated(
 
             f64 val = 0.0;
             if (t < N && (type == DAOCP_ONLY_U || type == DAOCP_MIXED)) {
-                v0.pa = Cu[t]+i*nu[t]; v1.pa = u[t];
-                val = blasfeo_ddot(nu[t], &v0, 0, &v1, 0);
+                val = daocp_dot(Cu[t]+i*nu[t], u[t], nu[t]); 
             }
             if (type == DAOCP_ONLY_X || type == DAOCP_MIXED) {
-                v0.pa = Cx[t]+i*nx[t]; v1.pa = x[t];
-                val += blasfeo_ddot(nx[t], &v0, 0, &v1, 0);
+                val += daocp_dot(Cx[t]+i*nx[t], x[t], nx[t]); 
             }
 
             f64 tmp = val - ug[t][i];
@@ -432,8 +427,8 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
            wrk->Me, me_ptr, n_active, eta_cols, wrk->neta);
     struct blasfeo_dvec vu, ve;
     vu.pa = mu_ptr; ve.pa = me_ptr;
-    wrk->Ld[n_active*wrk->W_stride + n_active] = blasfeo_ddot(wrk->nu_tot, &vu, 0, &vu, 0)
-                    - blasfeo_ddot(wrk->neta, &ve, 0, &ve, 0);
+    wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, wrk->nu_tot)
+                                                - daocp_dot(me_ptr, me_ptr, wrk->neta);
 }
 
 static void update_cholesky_add(daocp_workspace* wrk) {
@@ -655,19 +650,13 @@ u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     // Specialized syrk algorithm.
     u32 nu_cols = wrk->cnu[wrk->as.max_t] + wrk->dims->nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    struct blasfeo_dvec v0;
-    struct blasfeo_dvec v1;
     for (u32 i=0; i<n_active; ++i)
         for (u32 j=0; j<n_active; ++j) {
-            v0.pa = wrk->Mu + i*wrk->nu_tot;
-            v1.pa = wrk->Mu + j*wrk->nu_tot;
-            wrk->Ld[i*W_stride+j] += blasfeo_ddot(nu_cols, &v0, 0, &v1, 0);
+            wrk->Ld[i*W_stride+j] += daocp_dot(wrk->Mu+i*wrk->nu_tot, wrk->Mu+j*wrk->nu_tot, nu_cols);
         }
     for (u32 i=0; i<n_active; ++i)
         for (u32 j=0; j<n_active; ++j) {
-            v0.pa = wrk->Me + i*wrk->neta;
-            v1.pa = wrk->Me + j*wrk->neta;
-            wrk->Ld[i*W_stride+j] -= blasfeo_ddot(eta_cols, &v0, 0, &v1, 0);
+            wrk->Ld[i*W_stride+j] -= daocp_dot(wrk->Me+i*wrk->neta, wrk->Me+j*wrk->neta, eta_cols);
         }
 
     // Compute chol(dH), checking for singularity.
