@@ -36,6 +36,7 @@ typedef struct {
     u32** constraint_status;
     u32 n_active;
     u32 max_t;
+    u32 n_valid_intermediate;
 } daocp_active_set;
 
 typedef struct {
@@ -77,6 +78,7 @@ typedef struct {
     f64* xi;
     f64* p;
     f64* dual_linear;
+    f64* dual_intermediate;
     f64* Ld;
     f64* Mu;
     f64* Me;

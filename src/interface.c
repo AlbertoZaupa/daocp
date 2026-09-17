@@ -216,7 +216,7 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     // Dense workspace data.
     size += (2 * nu_tot + nx_tot - dims->nx[0]) * sizeof(f64); // u, eta, x
     size += 2 * (nb_tot + ng_tot) * sizeof(f64);
-    size += 3 * W_stride * sizeof(f64); // xi, p, dual_linear
+    size += 4 * W_stride * sizeof(f64); // xi, p, dual_linear, dual_intermediate
     size += (W_stride + 1) * W_stride * sizeof(f64); // Ld
     size += 2 * W_stride * nu_tot * sizeof(f64); // Mu, Me
     size += ne_tot * max_nx * sizeof(f64); // H
@@ -392,6 +392,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->dual_linear = (f64*) c_ptr;
     c_ptr += (size_t) W_stride * sizeof(f64);
+    wrk->dual_intermediate = (f64*) c_ptr;
+    c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->Ld = (f64*) c_ptr;
     c_ptr += (size_t) (W_stride + 1U) * W_stride * sizeof(f64);
     wrk->Mu = (f64*) c_ptr;
@@ -485,6 +487,7 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     wrk->ng_tot = ng_tot;
     wrk->W_stride = W_stride;
     wrk->as.n_active = 0;
+    wrk->as.n_valid_intermediate = 0;
     wrk->as.max_t = 0;
     wrk->singular = 0;
 

@@ -22,12 +22,16 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk) {
     */
     u32 n_active = wrk->as.n_active;
     
-    // copy d into p
-    for (u32 i=0; i<n_active; ++i) wrk->p[i] = -wrk->dual_linear[i];
+    // Reuse the cached solution of L y = -d.
+    for (u32 i=wrk->as.n_valid_intermediate; i<n_active; ++i) {
+        wrk->dual_intermediate[i] = -wrk->dual_linear[i]
+            - daocp_dot(wrk->Ld + i*wrk->W_stride, wrk->dual_intermediate, i);
+        wrk->dual_intermediate[i] *= wrk->Ld[i*wrk->W_stride + i];
+    }
+    wrk->as.n_valid_intermediate = n_active;
 
-    // Solve L y = -h
-    daocp_trsv(wrk->p, wrk->Ld, n_active, wrk->W_stride);
     // Solve L'p = y
+    memcpy(wrk->p, wrk->dual_intermediate, n_active*sizeof(f64));
     daocp_trsv_t(wrk->p, wrk->Ld, n_active, wrk->W_stride);
 }
 
@@ -544,6 +548,7 @@ static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     
     daocp_change_status(wrk, t, idx, type, 0);
     wrk->as.n_active -= 1;
+    wrk->as.n_valid_intermediate = DAOCP_MIN(wrk->as.n_valid_intermediate, xi_idx);
     
     // Recompute max_t
     wrk->as.max_t = 0;
@@ -637,6 +642,7 @@ void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
 u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     u32 n_active = wrk->as.n_active;
     u32 W_stride = wrk->W_stride;
+    wrk->as.n_valid_intermediate = 0;
 
     // Compute Mu and Meta from scratch
     for (u32 ci=0; ci<n_active; ++ci) {
@@ -687,6 +693,7 @@ void daocp_reset_working_set(daocp_workspace* wrk) {
         for (u32 i=0; i<ng; ++i) wrk->as.constraint_status[t][nbu+nbx+i] = 0; 
     }
     wrk->as.n_active = 0;
+    wrk->as.n_valid_intermediate = 0;
     wrk->singular = 0;
     wrk->as.max_t = 0;
 }
@@ -739,7 +746,8 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
                 break;
         }
         wrk->dual_linear[i] = p[c->idx];
-    } 
+    }
+    wrk->as.n_valid_intermediate = 0;
 }
 
 void daocp_pointer_swap(unsigned char** p1, unsigned char** p2) {
