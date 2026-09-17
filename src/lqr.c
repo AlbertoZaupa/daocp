@@ -49,7 +49,8 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         for (u32 i=0; i<neq_x0; ++i) GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] = h[i];
         for (u32 i=0; i<nx[t+1]; ++i)
             ABtmp[i] = BLASFEO_DMATEL(qp->BAwt+t, nu[t]+nx[t], i); 
-        daocp_fma_mv(GEtmp+ne[t]*(nx[t]+nu[t]+1)+nx[t]+nu[t], H, ABtmp, -1.0, neq_x0, nx[t+1], nx[t]+nu[t]+1);
+        for (u32 i=0; i<neq_x0; ++i)
+            GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] -= daocp_dot(H+i*nx[t+1], ABtmp, nx[t+1]);
 
         // Gaussian elimination
         u32 rho = wrk->rho[t] = daocp_gaussian_elimination(GEtmp, GEtmp + (ne[t]+neq_x0)*(nx[t]+nu[t]+1), ne[t]+neq_x0, nu[t], nx[t]+nu[t]+1, nu[t]);
@@ -65,10 +66,12 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
         /* 
             Complete LDL of KKT matrix [(R+B'PB) G'; G 0]
         */
-        blasfeo_pack_tran_dmat(nu[t], rho, GEtmp, nx[t]+nu[t]+1, wrk->Lue+t, 0, 0);
-        blasfeo_dtrsm_rltn(rho, nu[t], 1.0, wrk->Luu+t, 0, 0, wrk->Lue+t, 0, 0, wrk->Lue+t, 0, 0);
-        blasfeo_dgesc(rho, rho, 0.0, wrk->Lee+t, 0, 0);
-        blasfeo_dsyrk_dpotrf_ln(rho, nu[t], wrk->Lue+t, 0, 0, wrk->Lue+t, 0, 0, wrk->Lee+t, 0, 0, wrk->Lee+t, 0, 0);
+        if (rho) {
+            blasfeo_pack_tran_dmat(nu[t], rho, GEtmp, nx[t]+nu[t]+1, wrk->Lue+t, 0, 0);
+            blasfeo_dtrsm_rltn(rho, nu[t], 1.0, wrk->Luu+t, 0, 0, wrk->Lue+t, 0, 0, wrk->Lue+t, 0, 0);
+            blasfeo_dgese(rho, rho, 0.0, wrk->Lee+t, 0, 0);
+            blasfeo_dsyrk_dpotrf_ln(rho, nu[t], wrk->Lue+t, 0, 0, wrk->Lue+t, 0, 0, wrk->Lee+t, 0, 0, wrk->Lee+t, 0, 0);
+        }
 
         /*
             Compute partial feedback gains.
@@ -81,15 +84,17 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
                         wrk->Ku+t, 0, 0);
         blasfeo_dtrsm_rltn(nx[t], nu[t], 1.0, wrk->Luu+t, 0, 0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0);
         // Compute K1 = (M' - K0 Lu01')Lu11^{-T}
-        blasfeo_pack_dmat(nx[t], rho, GEtmp+nu[t], nx[t]+nu[t]+1, wrk->Ke+t, 0, 0);
-        blasfeo_dgemm_nt(nx[t], rho, nu[t], -1.0, wrk->Ku+t, 0, 0, wrk->Lue+t, 0, 0, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
-        blasfeo_dtrsm_rltn(nx[t], rho, 1.0, wrk->Lee+t, 0, 0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
+        if (rho) {
+            blasfeo_pack_dmat(nx[t], rho, GEtmp+nu[t], nx[t]+nu[t]+1, wrk->Ke+t, 0, 0);
+            blasfeo_dgemm_nt(nx[t], rho, nu[t], -1.0, wrk->Ku+t, 0, 0, wrk->Lue+t, 0, 0, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
+            blasfeo_dtrsm_rltn(nx[t], rho, 1.0, wrk->Lee+t, 0, 0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0);
+        }
 
         if (t==0) break;
         /*
             Update P = Q + A'PA - Ku Ku' + Keta Keta'
         */
-        blasfeo_dgemm_nt(nx[t], nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
+        blasfeo_dgemm_nt(nx[t], nx[t+1], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, wrk->P+t, 0, 0, 0.0, tmp1, 0, 0, tmp1, 0, 0);
         // POSSIBLE ALIGNMENT ISSUE WITH BLASFEO (On Mac, to be verified)
         // When the A and Q operands below are not aligned, reversing the
         // A, tmp1=A'P order creates a correctness issue.
@@ -98,7 +103,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
                          1.0, qp->RSQrq+t, nu[t], nu[t],
                          wrk->P+t-1, 0, 0);
         blasfeo_dsyrk_ln(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, wrk->Ku+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
-        blasfeo_dsyrk_ln(nx[t], rho, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
+        if (rho) blasfeo_dsyrk_ln(nx[t], rho, 1.0, wrk->Ke+t, 0, 0, wrk->Ke+t, 0, 0, 1.0, wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
         blasfeo_dtrtr_l(nx[t], wrk->P+t-1, 0, 0, wrk->P+t-1, 0, 0);
     }
     // Set number of affine constraints on x0.
@@ -142,7 +147,7 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
         blasfeo_drowex(nx[t], 1.0, &qp->RSQrq[t], nu[t]+nx[t], nu[t], ptmp, 0);
         blasfeo_dgemv_n(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, p, 0, 1.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, &wrk->ux_lqr[t], 0, 1.0, ptmp, 0, ptmp, 0);
-        blasfeo_dgemv_n(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &wrk->eta_lqr[t], 0, 1.0, ptmp, 0, ptmp, 0);
+        if (rho[t]) blasfeo_dgemv_n(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &wrk->eta_lqr[t], 0, 1.0, ptmp, 0, ptmp, 0);
         daocp_pointer_swap((unsigned char**)&p, (unsigned char**)&ptmp);
     }
 
@@ -153,7 +158,7 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
             [Luu' Lue'; 0 Lee'][u; eta] = [-Ku'x - du; Keta'x0 + deta]
         */
         blasfeo_dgemv_t(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, &wrk->ux_lqr[t], nu[t], -1.0, &wrk->ux_lqr[t], 0, &wrk->ux_lqr[t], 0);
-        blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &wrk->ux_lqr[t], nu[t], 1.0, &wrk->eta_lqr[t], 0, &wrk->eta_lqr[t], 0);
+        if (rho[t]) blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &wrk->ux_lqr[t], nu[t], 1.0, &wrk->eta_lqr[t], 0, &wrk->eta_lqr[t], 0);
         DAOCP_TRSVLQR_T(wrk->ux_lqr[t], wrk->eta_lqr[t], wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
         
         /*

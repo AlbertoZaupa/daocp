@@ -466,6 +466,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     }
     blasfeo_create_dmat(max_nx_nu, max_nx, &wrk->tmp2, c_ptr);
     c_ptr += blasfeo_memsize_dmat(max_nx_nu, max_nx);
+    // Unaligned BLASFEO kernels can read beta*C even when beta is zero.
+    blasfeo_dgese(max_nx_nu, max_nx, 0.0, &wrk->tmp2, 0, 0);
 
     for (u32 t = 0; t < N; ++t) {
         blasfeo_create_dvec(

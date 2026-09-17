@@ -179,7 +179,7 @@ void daocp_selection_greedy(
         v0.pa = u[t]; v1.pa = x[t];
         blasfeo_dgemv_t(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0, &v1, 0, -1.0, &v0, 0, &v0, 0);
         v0.pa = eta[t];
-        blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
+        if (rho[t]) blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0, &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u[t]; v1.pa = eta[t];
         DAOCP_TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
@@ -190,11 +190,13 @@ void daocp_selection_greedy(
         if (check_constraints_at_t(wrk, args, t, ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated))
             return; 
 
-        // Propagate state dynamics
-        v0.pa = x[t]; v1.pa = x[t+1];
-        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
-        v0.pa = u[t];
-        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0, &v0, 0, 1.0, &v1, 0, &v1, 0);
+        // Propagate state 
+        memcpy(wrk->GEtmp, wrk->u[t], nu[t]*sizeof(f64));
+        memcpy(wrk->GEtmp+nu[t], wrk->x[t], nx[t]*sizeof(f64));
+        v0.pa = wrk->GEtmp;
+        v1.pa = wrk->x[t+1];
+        blasfeo_dgemv_t(nu[t]+nx[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0,
+                    &v0, 0, 0.0, &v1, 0, &v1, 0);
 
         // Check state bounds
         if (check_bounds_at_t(wrk, args, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated))
@@ -240,18 +242,18 @@ void daocp_selection_most_violated(
         blasfeo_dgemv_t(nx[t], nu[t], -1.0, wrk->Ku+t, 0, 0,
                         &v1, 0, -1.0, &v0, 0, &v0, 0);
         v0.pa = eta[t];
-        blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0,
+        if (rho[t]) blasfeo_dgemv_t(nx[t], rho[t], 1.0, wrk->Ke+t, 0, 0,
                         &v1, 0, 1.0, &v0, 0, &v0, 0);
         v0.pa = u[t]; v1.pa = eta[t];
         DAOCP_TRSVLQR_T(v0, v1, wrk->Luu+t, wrk->Lue+t, wrk->Lee+t, nu[t], rho[t]);
 
-        // Propagate state dynamics
-        v0.pa = x[t]; v1.pa = x[t+1];
-        blasfeo_dgemv_t(nx[t], nx[t+1], 1.0, qp->BAwt+t, nu[t], 0,
-                        &v0, 0, 0.0, &v1, 0, &v1, 0);
-        v0.pa = u[t];
-        blasfeo_dgemv_t(nu[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0,
-                        &v0, 0, 1.0, &v1, 0, &v1, 0);
+        // Propagate state
+        memcpy(wrk->GEtmp, wrk->u[t], nu[t]*sizeof(f64));
+        memcpy(wrk->GEtmp+nu[t], wrk->x[t], nx[t]*sizeof(f64));
+        v0.pa = wrk->GEtmp;
+        v1.pa = wrk->x[t+1];
+        blasfeo_dgemv_t(nu[t]+nx[t], nx[t+1], 1.0, qp->BAwt+t, 0, 0,
+                    &v0, 0, 0.0, &v1, 0, &v1, 0);
     }
 
     // Find the inactive constraint with the largest violation.
@@ -377,7 +379,7 @@ static void compute_M_row(
         // Add costate contribution
         if (t > 0) {
             blasfeo_dgemv_n(nx[t], nu[t], -1.0, &wrk->Ku[t], 0, 0, &vu, 0, 1.0, p, 0, p, 0);
-            blasfeo_dgemv_n(nx[t], rho[t], 1.0, &wrk->Ke[t], 0, 0, &ve, 0, 1.0, p, 0, p, 0);
+            if (rho[t]) blasfeo_dgemv_n(nx[t], rho[t], 1.0, &wrk->Ke[t], 0, 0, &ve, 0, 1.0, p, 0, p, 0);
         }
     }
 
@@ -388,12 +390,22 @@ static void compute_M_row(
         // Solve Lu [du; deta] = [B' p; 0]
         ve.pa = Me + crho[tau];
         DAOCP_TRSVLQR(vu, ve, wrk->Luu+tau, wrk->Lue+tau, wrk->Lee+tau, nu[tau], rho[tau]);
+        if (tau == 0) break;
         // p = A[tau]' p - Ku du + Keta deta
         blasfeo_dgemv_n(nx[tau], nx[tau+1], 1.0, qp->BAwt+tau, nu[tau], 0, p, 0, 0.0, ptmp, 0, ptmp, 0);
         blasfeo_dgemv_n(nx[tau], nu[tau], -1.0, wrk->Ku+tau, 0, 0, &vu, 0, 1.0, ptmp, 0, ptmp, 0);
-        blasfeo_dgemv_n(nx[tau], rho[tau], 1.0, wrk->Ke+tau, 0, 0, &ve, 0, 1.0, ptmp, 0, ptmp, 0);
+        if (rho[tau]) blasfeo_dgemv_n(nx[tau], rho[tau], 1.0, wrk->Ke+tau, 0, 0, &ve, 0, 1.0, ptmp, 0, ptmp, 0);
         daocp_pointer_swap((unsigned char**) &p, (unsigned char**) &ptmp);
     }
+}
+
+// State-only constraints at t depend on controls strictly before t.
+static u32 constraint_support(const daocp_workspace* wrk, const daocp_constraint* c, u32 equality) {
+    if (c->t == wrk->dims->N) return equality ? wrk->neta : wrk->nu_tot;
+    u32 cols = equality ? wrk->crho[c->t] : wrk->cnu[c->t];
+    if (c->type != DAOCP_BOUND_X && c->type != DAOCP_ONLY_X)
+        cols += equality ? wrk->rho[c->t] : wrk->dims->nu[c->t];
+    return cols;
 }
 
 static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* constr) {
@@ -403,24 +415,23 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
         2) Compute their signed products with existing rows.
     */
     u32 n_active = wrk->as.n_active;
-    u32* nu = qp->dims.nu;
-
     compute_M_row(wrk, qp, constr, n_active);
     
     // Write the new row of H into the new row of L.
     memset(wrk->Ld + n_active*wrk->W_stride, 0, (n_active+1)*sizeof(f64));
     f64* mu_ptr = wrk->Mu + n_active*wrk->nu_tot;
     f64* me_ptr = wrk->Me + n_active*wrk->neta;
-    u32 nu_cols = wrk->cnu[wrk->as.max_t] + nu[wrk->as.max_t];
-    u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
-    daocp_fma_mv(wrk->Ld + n_active*wrk->W_stride,
-           wrk->Mu, mu_ptr, 1.0, n_active, nu_cols, wrk->nu_tot);
-    daocp_fma_mv(wrk->Ld + n_active*wrk->W_stride,
-           wrk->Me, me_ptr, -1.0, n_active, eta_cols, wrk->neta);
-    struct blasfeo_dvec vu, ve;
-    vu.pa = mu_ptr; ve.pa = me_ptr;
-    wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, wrk->nu_tot)
-                                                - daocp_dot(me_ptr, me_ptr, wrk->neta);
+    u32 nu_cols = constraint_support(wrk, constr, 0);
+    u32 eta_cols = constraint_support(wrk, constr, 1);
+    for (u32 i=0; i<n_active; ++i) {
+        u32 nc = DAOCP_MIN(nu_cols, constraint_support(wrk, wrk->as.xi2con+i, 0));
+        u32 ne = DAOCP_MIN(eta_cols, constraint_support(wrk, wrk->as.xi2con+i, 1));
+        wrk->Ld[n_active*wrk->W_stride+i] =
+            daocp_dot(wrk->Mu+i*wrk->nu_tot, mu_ptr, nc)
+            - daocp_dot(wrk->Me+i*wrk->neta, me_ptr, ne);
+    }
+    wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, nu_cols)
+                                                - daocp_dot(me_ptr, me_ptr, eta_cols);
 }
 
 static void update_cholesky_add(daocp_workspace* wrk) {
@@ -500,7 +511,10 @@ static void update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     // Perform rank1 update of bottom-right lower triangle
     f64 lii, lii_new, a, b;
     for (u32 i=idx; i<n_active-1; ++i) {
-        lii = 1 / wrk->Ld[i*W_stride+i];
+        // A singular last pivot is stored as zero, not its reciprocal.
+        // Removing an older constraint can restore a positive pivot.
+        lii = wrk->Ld[i*W_stride+i];
+        if (lii != 0.0) lii = 1.0 / lii;
         lii_new = 1 / sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx])); 
         wrk->Ld[i*W_stride+i] = lii_new;
         a = l[i-idx] * lii_new;
@@ -656,7 +670,7 @@ u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
         f64* lii = wrk->Ld + i*W_stride + i;
         if (*lii < DAOCP_ZERO_TOL) return 1; // Detected singularity.
         *lii = 1 / sqrt(*lii);
-        for (u32 j=i+1; j<n_active; ++j) wrk->Ld[j*W_stride + i] /= *lii;
+        for (u32 j=i+1; j<n_active; ++j) wrk->Ld[j*W_stride + i] *= *lii;
         for (u32 j=i+1; j<n_active; ++j)
             for (u32 k=i+1; k<n_active; ++k)
                 wrk->Ld[j*W_stride + k] -= wrk->Ld[j*W_stride + i] * wrk->Ld[k*W_stride + i];

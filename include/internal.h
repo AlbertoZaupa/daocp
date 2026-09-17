@@ -128,12 +128,16 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
 // Linear algebra and various utils
 #define DAOCP_TRSVLQR(vu, ve, Luu, Lue, Lee, nu, rho) { \
     blasfeo_dtrsv_lnn(nu, Luu, 0, 0, &vu, 0, &vu, 0); \
-    blasfeo_dgemv_n(rho, nu, -1.0, Lue, 0, 0, &vu, 0, 1.0, &ve, 0, &ve, 0); \
-    blasfeo_dtrsv_lnn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
+    if ((rho) > 0) { \
+        blasfeo_dgemv_n(rho, nu, -1.0, Lue, 0, 0, &vu, 0, 1.0, &ve, 0, &ve, 0); \
+        blasfeo_dtrsv_lnn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
+    } \
 }
 #define DAOCP_TRSVLQR_T(vu, ve, Luu, Lue, Lee, nu, rho) { \
-    blasfeo_dtrsv_ltn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
-    blasfeo_dgemv_t(rho, nu, -1.0, Lue, 0, 0, &ve, 0, 1.0, &vu, 0, &vu, 0); \
+    if ((rho) > 0) { \
+        blasfeo_dtrsv_ltn(rho, Lee, 0, 0, &ve, 0, &ve, 0); \
+        blasfeo_dgemv_t(rho, nu, -1.0, Lue, 0, 0, &ve, 0, 1.0, &vu, 0, &vu, 0); \
+    } \
     blasfeo_dtrsv_ltn(nu, Luu, 0, 0, &vu, 0, &vu, 0); \
 }
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride);
