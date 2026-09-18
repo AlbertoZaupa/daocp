@@ -32,14 +32,18 @@ void daocp_fma_mv(
 
     // We maintain a grid of 16 (scalar) accumulators. This gives a decent amount
     // of parallelism.
+    f64 a00, a01, a02, a03;
+    f64 a10, a11, a12, a13;
+    f64 a20, a21, a22, a23;
+    f64 a30, a31, a32, a33;
     f64 x0, x1, x2, x3;
 
     if (ny >= 4) {
         for (u32 i=0; i<=ny-4; i+=4) {
-            f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
-            f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
-            f64 a20 = 0; f64 a21 = 0; f64 a22 = 0; f64 a23 = 0;
-            f64 a30 = 0; f64 a31 = 0; f64 a32 = 0; f64 a33 = 0;
+            a00=0; a01=0; a02=0; a03=0;
+            a10=0; a11=0; a12=0; a13=0;
+            a20=0; a21=0; a22=0; a23=0;
+            a30=0; a31=0; a32=0; a33=0;
             // Accumulate dot products
             if (nx >= 4) {
                 for (u32 j=0; j<=nx-4; j+=4) {
@@ -86,8 +90,8 @@ void daocp_fma_mv(
 
     // Handle two of the remaining rows, then the final odd row.
     if (ny - ((ny>>2)<<2) >= 2) {
-        f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
-        f64 a10 = 0; f64 a11 = 0; f64 a12 = 0; f64 a13 = 0;
+        a00=0; a01=0; a02=0; a03=0;
+        a10=0; a11=0; a12=0; a13=0;
         if (nx >= 4) {
             for (u32 j=0; j<=nx-4; j+=4) {
                 x0 = x[j]; x1 = x[j+1]; x2 = x[j+2]; x3 = x[j+3];
@@ -117,7 +121,7 @@ void daocp_fma_mv(
         y += 2;
     }
     if (ny - ((ny>>1)<<1) >= 1) {
-        f64 a00 = 0; f64 a01 = 0; f64 a02 = 0; f64 a03 = 0;
+        a00=0; a01=0; a02=0; a03=0;
         if (nx >= 4) {
             for (u32 j=0; j<=nx-4; j+=4) {
                 a00 += A[j]*x[j]; a01 += A[j+1]*x[j+1];
@@ -136,25 +140,137 @@ void daocp_fma_mv(
     }
 }
 
-void daocp_fma_mv_support(
+void daocp_fma_mv_temporal_support(
     f64* __restrict__ y, const f64* __restrict__ A,
     const f64* __restrict__ x, f64 alpha, u32 ny, u32 nx, u32 stride,
     const daocp_workspace* wrk, u32 equality) {
     if (ny == 0 || nx == 0) return;
 
-    // Rows follow xi2con order. Stop once either x or every row in the
-    // current block is zero, retaining the dense kernel's 4/2/1-row blocking.
-    for (u32 i=0; i<ny;) {
-        u32 remaining = ny-i;
-        u32 rows = remaining >= 4 ? 4 : (remaining >= 2 ? 2 : 1);
-        u32 cols = 0;
-        for (u32 r=0; r<rows; ++r) {
-            u32 support = daocp_constraint_support(wrk, wrk->as.xi2con+i+r, equality);
-            cols = DAOCP_MAX(cols, support);
+    f64 a00, a01, a02, a03;
+    f64 a10, a11, a12, a13;
+    f64 a20, a21, a22, a23;
+    f64 a30, a31, a32, a33;
+    f64 x0, x1, x2, x3;
+    u32 var_tot = equality ? wrk->neta : wrk->nu_tot;
+    u32* dim = equality ? wrk->rho : wrk->dims->nu;
+    u32* cdim = equality ? wrk->crho : wrk->cnu;
+
+    if (ny >= 4) {
+        for (u32 i=0; i<=ny-4; i+=4) {
+            a00=0; a01=0; a02=0; a03=0;
+            a10=0; a11=0; a12=0; a13=0;
+            a20=0; a21=0; a22=0; a23=0;
+            a30=0; a31=0; a32=0; a33=0;
+            // Compute temporal support for the 4 rows support 
+            u32 csupport0 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+i, wrk->dims->N, var_tot, dim, cdim);
+            u32 csupport1 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+i+1, wrk->dims->N, var_tot, dim, cdim);
+            u32 csupport2 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+i+2, wrk->dims->N, var_tot, dim, cdim);
+            u32 csupport3 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+i+3, wrk->dims->N, var_tot, dim, cdim);
+            u32 ncols = DAOCP_MAX(csupport0, csupport1);
+            u32 ncols1 = DAOCP_MAX(csupport2, csupport3);
+            ncols = DAOCP_MAX(ncols, ncols1);
+            ncols = DAOCP_MIN(ncols, nx);
+
+            // Accumulate dot products
+            if (ncols >= 4) {
+                for (u32 j=0; j<=ncols-4; j+=4) {
+                    x0 = x[j]; x1 = x[j+1]; x2 = x[j+2]; x3 = x[j+3];
+                    a00 += A[j]*x0; a01 += A[j+1]*x1; a02 += A[j+2]*x2; a03 += A[j+3]*x3;
+                    a10 += A[stride + j]*x0; a11 += A[stride+j+1]*x1;
+                    a12 += A[stride+j+2]*x2; a13 += A[stride+j+3]*x3;
+                    a20 += A[2*stride + j]*x0; a21 += A[2*stride+j+1]*x1;
+                    a22 += A[2*stride+j+2]*x2; a23 += A[2*stride+j+3]*x3;
+                    a30 += A[3*stride + j]*x0; a31 += A[3*stride+j+1]*x1;
+                    a32 += A[3*stride+j+2]*x2; a33 += A[3*stride+j+3]*x3;
+                }
+            }
+            u32 ncols_mod = (ncols>>2)<<2;
+            if (ncols - ncols_mod >= 2) {
+                x0 = x[ncols_mod]; x1 = x[ncols_mod+1];
+                a00 += A[ncols_mod]*x0; a01 += A[ncols_mod+1]*x1;
+                a10 += A[stride + ncols_mod]*x0; a11 += A[stride+ncols_mod+1]*x1;
+                a20 += A[2*stride + ncols_mod]*x0; a21 += A[2*stride+ncols_mod+1]*x1;
+                a30 += A[3*stride + ncols_mod]*x0; a31 += A[3*stride+ncols_mod+1]*x1;
+            }
+            ncols_mod = (ncols>>1)<<1;
+            if (ncols > ncols_mod) {
+                x0 = x[ncols_mod];
+                a00 += A[ncols_mod]*x0;
+                a10 += A[stride + ncols_mod]*x0;
+                a20 += A[2*stride + ncols_mod]*x0;
+                a30 += A[3*stride + ncols_mod]*x0;
+            }
+
+            // Store
+            a00 += a02; a01 += a03;
+            a10 += a12; a11 += a13;
+            a20 += a22; a21 += a23;
+            a30 += a32; a31 += a33;
+            y[0] += alpha * (a00 + a01);
+            y[1] += alpha * (a10 + a11);
+            y[2] += alpha * (a20 + a21);
+            y[3] += alpha * (a30 + a31);
+            A += 4*stride;
+            y += 4;
         }
-        cols = DAOCP_MIN(cols, nx);
-        daocp_fma_mv(y+i, A+i*stride, x, alpha, rows, cols, stride);
-        i += rows;
+    }
+
+    // Handle two of the remaining rows, then the final odd row.
+    if (ny - ((ny>>2)<<2) >= 2) {
+        a00=0; a01=0; a02=0; a03=0;
+        a10=0; a11=0; a12=0; a13=0;
+        u32 csupport0 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+((ny>>2)<<2), wrk->dims->N, var_tot, dim, cdim);
+        u32 csupport1 = DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+((ny>>2)<<2)+1, wrk->dims->N, var_tot, dim, cdim);
+        u32 ncols = DAOCP_MAX(csupport0, csupport1);
+        ncols = DAOCP_MIN(ncols, nx);
+
+        if (ncols >= 4) {
+            for (u32 j=0; j<=ncols-4; j+=4) {
+                x0 = x[j]; x1 = x[j+1]; x2 = x[j+2]; x3 = x[j+3];
+                a00 += A[j]*x0; a01 += A[j+1]*x1;
+                a02 += A[j+2]*x2; a03 += A[j+3]*x3;
+                a10 += A[stride+j]*x0; a11 += A[stride+j+1]*x1;
+                a12 += A[stride+j+2]*x2; a13 += A[stride+j+3]*x3;
+            }
+        }
+        u32 ncols_mod = (ncols>>2)<<2;
+        if (ncols - ncols_mod >= 2) {
+            x0 = x[ncols_mod]; x1 = x[ncols_mod+1];
+            a00 += A[ncols_mod]*x0; a01 += A[ncols_mod+1]*x1;
+            a10 += A[stride+ncols_mod]*x0; a11 += A[stride+ncols_mod+1]*x1;
+        }
+        ncols_mod = (ncols>>1)<<1;
+        if (ncols > ncols_mod) {
+            x0 = x[ncols_mod];
+            a00 += A[ncols_mod]*x0;
+            a10 += A[stride+ncols_mod]*x0;
+        }
+        a00 += a02; a01 += a03;
+        a10 += a12; a11 += a13;
+        y[0] += alpha * (a00 + a01);
+        y[1] += alpha * (a10 + a11);
+        A += 2*stride;
+        y += 2;
+    }
+    if (ny - ((ny>>1)<<1) >= 1) {
+        a00=0; a01=0; a02=0; a03=0;
+        u32 ncols = DAOCP_MIN(nx, DAOCP_CONSTRAINT_SUPPORT(wrk->as.xi2con+((ny>>1)<<1), wrk->dims->N, var_tot, dim, cdim));
+
+        if (ncols >= 4) {
+            for (u32 j=0; j<=ncols-4; j+=4) {
+                a00 += A[j]*x[j]; a01 += A[j+1]*x[j+1];
+                a02 += A[j+2]*x[j+2]; a03 += A[j+3]*x[j+3];
+            }
+        }
+        u32 ncols_mod = (ncols>>2)<<2;
+        if (ncols - ncols_mod >= 2) {
+            a00 += A[ncols_mod]*x[ncols_mod];
+            a01 += A[ncols_mod+1]*x[ncols_mod+1];
+        }
+        ncols_mod = (ncols>>1)<<1;
+        if (ncols > ncols_mod) a00 += A[ncols_mod]*x[ncols_mod];
+        a00 += a02; a01 += a03;
+        y[0] += alpha * (a00 + a01);
     }
 }
 

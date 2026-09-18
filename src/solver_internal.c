@@ -412,11 +412,11 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
     memset(wrk->Ld + n_active*wrk->W_stride, 0, (n_active+1)*sizeof(f64));
     f64* mu_ptr = wrk->Mu + n_active*wrk->nu_tot;
     f64* me_ptr = wrk->Me + n_active*wrk->neta;
-    u32 nu_cols = daocp_constraint_support(wrk, constr, 0);
-    u32 eta_cols = daocp_constraint_support(wrk, constr, 1);
-    daocp_fma_mv_support(wrk->Ld + n_active*wrk->W_stride,
+    u32 nu_cols = DAOCP_CONSTRAINT_SUPPORT(constr, wrk->dims->N, wrk->nu_tot, wrk->dims->nu, wrk->cnu);
+    u32 eta_cols = DAOCP_CONSTRAINT_SUPPORT(constr, wrk->dims->N, wrk->neta, wrk->rho, wrk->crho);
+    daocp_fma_mv_temporal_support(wrk->Ld + n_active*wrk->W_stride,
         wrk->Mu, mu_ptr, 1.0, n_active, nu_cols, wrk->nu_tot, wrk, 0);
-    daocp_fma_mv_support(wrk->Ld + n_active*wrk->W_stride,
+    daocp_fma_mv_temporal_support(wrk->Ld + n_active*wrk->W_stride,
         wrk->Me, me_ptr, -1.0, n_active, eta_cols, wrk->neta, wrk, 1);
     wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, nu_cols)
                                                 - daocp_dot(me_ptr, me_ptr, eta_cols);
