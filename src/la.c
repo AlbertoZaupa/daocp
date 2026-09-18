@@ -136,6 +136,28 @@ void daocp_fma_mv(
     }
 }
 
+void daocp_fma_mv_support(
+    f64* __restrict__ y, const f64* __restrict__ A,
+    const f64* __restrict__ x, f64 alpha, u32 ny, u32 nx, u32 stride,
+    const daocp_workspace* wrk, u32 equality) {
+    if (ny == 0 || nx == 0) return;
+
+    // Rows follow xi2con order. Stop once either x or every row in the
+    // current block is zero, retaining the dense kernel's 4/2/1-row blocking.
+    for (u32 i=0; i<ny;) {
+        u32 remaining = ny-i;
+        u32 rows = remaining >= 4 ? 4 : (remaining >= 2 ? 2 : 1);
+        u32 cols = 0;
+        for (u32 r=0; r<rows; ++r) {
+            u32 support = daocp_constraint_support(wrk, wrk->as.xi2con+i+r, equality);
+            cols = DAOCP_MAX(cols, support);
+        }
+        cols = DAOCP_MIN(cols, nx);
+        daocp_fma_mv(y+i, A+i*stride, x, alpha, rows, cols, stride);
+        i += rows;
+    }
+}
+
 void daocp_fma_mv_t(
     f64* __restrict__ y, const f64* __restrict__ A, 
     const f64* __restrict__ x, u32 ny, u32 nx, u32 stride) {

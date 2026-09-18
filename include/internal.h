@@ -97,6 +97,15 @@ typedef struct {
     struct blasfeo_dvec costate1;
 } daocp_workspace;
 
+// State-only constraints at t depend on controls strictly before t.
+static inline u32 daocp_constraint_support(const daocp_workspace* wrk, const daocp_constraint* c, u32 equality) {
+    if (c->t == wrk->dims->N) return equality ? wrk->neta : wrk->nu_tot;
+    u32 cols = equality ? wrk->crho[c->t] : wrk->cnu[c->t];
+    if (c->type != DAOCP_BOUND_X && c->type != DAOCP_ONLY_X)
+        cols += equality ? wrk->rho[c->t] : wrk->dims->nu[c->t];
+    return cols;
+}
+
 
 // Solver logic
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args);
@@ -143,6 +152,7 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
 void daocp_trsv(f64* x, f64* L, u32 n, u32 stride);
 void daocp_trsv_t(f64* x, f64* L, u32 n, u32 stride);
 void daocp_fma_mv(f64* y, const f64* A, const f64* x, f64 alpha, u32 ny, u32 nx, u32 stride);
+void daocp_fma_mv_support(f64* y, const f64* A, const f64* x, f64 alpha, u32 ny, u32 nx, u32 stride, const daocp_workspace* wrk, u32 equality);
 void daocp_fma_mv_t(f64* y, const f64* A, const f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);

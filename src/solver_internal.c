@@ -399,15 +399,6 @@ static void compute_M_row(
     }
 }
 
-// State-only constraints at t depend on controls strictly before t.
-static u32 constraint_support(const daocp_workspace* wrk, const daocp_constraint* c, u32 equality) {
-    if (c->t == wrk->dims->N) return equality ? wrk->neta : wrk->nu_tot;
-    u32 cols = equality ? wrk->crho[c->t] : wrk->cnu[c->t];
-    if (c->type != DAOCP_BOUND_X && c->type != DAOCP_ONLY_X)
-        cols += equality ? wrk->rho[c->t] : wrk->dims->nu[c->t];
-    return cols;
-}
-
 static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* constr) {
     /*
         dH = Mu Mu' - Meta Meta'.
@@ -421,15 +412,12 @@ static void compute_hessian_row(daocp_workspace* wrk, daocp_qp* qp, daocp_constr
     memset(wrk->Ld + n_active*wrk->W_stride, 0, (n_active+1)*sizeof(f64));
     f64* mu_ptr = wrk->Mu + n_active*wrk->nu_tot;
     f64* me_ptr = wrk->Me + n_active*wrk->neta;
-    u32 nu_cols = constraint_support(wrk, constr, 0);
-    u32 eta_cols = constraint_support(wrk, constr, 1);
-    for (u32 i=0; i<n_active; ++i) {
-        u32 nc = DAOCP_MIN(nu_cols, constraint_support(wrk, wrk->as.xi2con+i, 0));
-        u32 ne = DAOCP_MIN(eta_cols, constraint_support(wrk, wrk->as.xi2con+i, 1));
-        wrk->Ld[n_active*wrk->W_stride+i] =
-            daocp_dot(wrk->Mu+i*wrk->nu_tot, mu_ptr, nc)
-            - daocp_dot(wrk->Me+i*wrk->neta, me_ptr, ne);
-    }
+    u32 nu_cols = daocp_constraint_support(wrk, constr, 0);
+    u32 eta_cols = daocp_constraint_support(wrk, constr, 1);
+    daocp_fma_mv_support(wrk->Ld + n_active*wrk->W_stride,
+        wrk->Mu, mu_ptr, 1.0, n_active, nu_cols, wrk->nu_tot, wrk, 0);
+    daocp_fma_mv_support(wrk->Ld + n_active*wrk->W_stride,
+        wrk->Me, me_ptr, -1.0, n_active, eta_cols, wrk->neta, wrk, 1);
     wrk->Ld[n_active*wrk->W_stride + n_active] = daocp_dot(mu_ptr, mu_ptr, nu_cols)
                                                 - daocp_dot(me_ptr, me_ptr, eta_cols);
 }

@@ -56,7 +56,7 @@ def time_ocp():
         solver = OCPsolver(A, B, None, Ql, R, None,
                         None, None, None, None, lbu, ubu,
                         None, None, None,
-                        dx0, N, nx, nu, max_iter)
+                        dx0, N, nx, nu, max_iter, greedy=True)
         res = solver.solve()
         total += res.info.solve_time
     print(f"Average solve time: {(total/nreps):3f} us")
