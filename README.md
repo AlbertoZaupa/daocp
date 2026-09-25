@@ -28,14 +28,14 @@ This repository implements a dual active-set solver for Quadratic Programs (QPs)
 \end{aligned}
 ```
 
-The solver is implemented entirely in `src.c`, and it relies on the linear algebra backend `blasfeo`.
+The solver is a C library, with only the linear algebra backend `blasfeo` as an external dependency. At the moment the solver can be used from Python (steps below), and in C from its native API. Have a look at `examples/python/di.py` to see how to formulate and solve OCPs and use DAOCP in a Model Predictive Control setting.
 
 ## Installation
 
 If you haven't cloned the repository yet, run:
 
 ```sh
-git clone https://github.com/AlbertoZaupa/daqp-ocp.git --recurse-submodules
+git clone https://github.com/AlbertoZaupa/daocp.git --recurse-submodules
 ```
 
 Otherwise, make sure you clone the `blasfeo` source code by running:
@@ -63,7 +63,7 @@ Now you are ready to build the solver, as well as the Python wrapper to run the 
 3 examples are currently available to test and time the solver:
 
 - `examples/python/di.py`: standard double integrator regulation problem.
-- `examples/python/atlas.py`: disturbance rejection for a humanoid robot model.
+- `examples/python/atlas.py`: stabilization of a humanoid robot model.
 - `examples/python/quadruped.py`: problem involving a quadruped with a manipulator installed on its back.
 
 First make sure that you install the required Python dependencies:
@@ -72,7 +72,7 @@ First make sure that you install the required Python dependencies:
 pip install -r examples/python/requirements.txt
 ```
 
-Then you can just run:
+Then you can just run (from the top level directory):
 
 ```sh
 python examples/python/di.py
