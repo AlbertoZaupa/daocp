@@ -45,7 +45,7 @@ def solve_ocp():
         A,      # A matrix. Can also be list [A0, A1, ..., A_{N-1}]
         B,      # B matrix. Can also be list [B0, B1, ..., B_{N-1}]
         None,   # w[k] affine terms. None => w[k] = 0
-        Ql,      # Q matrix. Here terminal cost == stage cost. Can also be a list
+        Ql,     # Q matrix. Here terminal cost == stage cost. Can also be a list
         R,      # R matrix. Can also be list [R0, R1, ..., R_{N-1}]
         None,   # S matrix (mixing quadratic term). None => S[k] = 0
         None,   # q[k] state-linear terms. None => q[k] = 0
