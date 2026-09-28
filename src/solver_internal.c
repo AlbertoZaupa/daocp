@@ -605,11 +605,23 @@ u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_
 }
 
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
-    return wrk->as.constraint_status[t][daocp_constraint_idx(wrk, t, idx, type)];
+    return wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type)];
+}
+
+u32 daocp_is_soft(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
+    return 1;
+}
+
+u32 daocp_is_softened(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
+    return wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type) + 1];
 }
 
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status) {
-    wrk->as.constraint_status[t][daocp_constraint_idx(wrk, t, idx, type)] = status;
+    wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type)] = status;
+}
+
+void daocp_change_softening(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 soft_status) {
+    wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type) + 1] = soft_status;
 }
 
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
@@ -671,9 +683,9 @@ void daocp_reset_working_set(daocp_workspace* wrk) {
         u32 nbu = wrk->dims->nbu[t];
         u32 nbx = wrk->dims->nbx[t];
         u32 ng = wrk->dims->ng[t];
-        for (u32 i=0; i<nbu; ++i) wrk->as.constraint_status[t][i] = 0; 
-        for (u32 i=0; i<nbx; ++i) wrk->as.constraint_status[t][nbu+i] = 0; 
-        for (u32 i=0; i<ng; ++i) wrk->as.constraint_status[t][nbu+nbx+i] = 0; 
+        for (u32 i=0; i<2*nbu; ++i) wrk->as.constraint_status[t][i] = 0; 
+        for (u32 i=0; i<2*nbx; ++i) wrk->as.constraint_status[t][nbu+i] = 0; 
+        for (u32 i=0; i<2*ng; ++i) wrk->as.constraint_status[t][nbu+nbx+i] = 0; 
     }
     wrk->as.n_active = 0;
     wrk->as.n_valid_intermediate = 0;

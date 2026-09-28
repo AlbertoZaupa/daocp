@@ -29,6 +29,7 @@ typedef struct {
     u32 idx;
     daocp_constraint_type type;
     u32 is_upper;
+    u32 is_soft;
 } daocp_constraint;
 
 typedef struct {
@@ -111,7 +112,10 @@ u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n);
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol);
 u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_is_soft(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_is_softened(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);
+void daocp_change_softening(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 soft_status);
 
 // Solver update logic
 u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp);

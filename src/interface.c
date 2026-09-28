@@ -61,12 +61,15 @@ u32 daocp_qp_memsize(daocp_dims* dims) {
     size += (N + 1) * sizeof(struct blasfeo_dmat); // RSQrq
 
     // Stage pointer arrays.
-    size += (11*N + 7) * sizeof(f64*);
+    size += (17*N + 11) * sizeof(f64*);
     size += (2*N + 1) * sizeof(u32*);
 
     // Dense, non-BLASFEO data.
     size += (u32) dims->nx[0] * sizeof(f64); // x0
     for (u32 t = 0; t <= N; ++t) {
+        if (t>0) size += 2*dims->nbx[t] * sizeof(f64); // Zbx, zbx
+        if (t<N) size += 2*dims->nbu[t] * sizeof(f64); // Zbu, zbu
+        size += 2*dims->ng[t] * sizeof(f64); // Zg, zg
         if (t>0) size += dims->ng[t] * dims->nx[t] * sizeof(f64); // Cx
         if (t < N) size += dims->ng[t] * dims->nu[t] * sizeof(f64); // Cu
         size += dims->ne[t] * dims->nx[t] * sizeof(f64); // Dx
@@ -103,6 +106,12 @@ void daocp_qp_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory) {
     qp->BAwt = (struct blasfeo_dmat*) c_ptr; c_ptr += N*sizeof(struct blasfeo_dmat);
     qp->RSQrq = (struct blasfeo_dmat*) c_ptr; c_ptr += (N+1)*sizeof(struct blasfeo_dmat);
 
+    qp->Zbx = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
+    qp->Zbu = (f64**) c_ptr; c_ptr += N * sizeof(f64*);
+    qp->Zg = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
+    qp->zbx = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
+    qp->zbu = (f64**) c_ptr; c_ptr += N * sizeof(f64*);
+    qp->zg = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
     qp->Cx = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
     qp->Cu = (f64**) c_ptr; c_ptr += N*sizeof(f64*);
     qp->Dx = (f64**) c_ptr; c_ptr += (N+1) * sizeof(f64*);
@@ -119,6 +128,32 @@ void daocp_qp_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory) {
 
     qp->x0 = (f64*) c_ptr; c_ptr += dims->nx[0] * sizeof(f64);
 
+    qp->Zbx[0] = 0;
+    for (u32 t = 1; t <= N; ++t) {
+        qp->Zbx[t] = (f64*) c_ptr;
+        c_ptr += dims->nbx[t] * sizeof(f64);
+    }
+    for (u32 t = 0; t<N; ++t) {
+        qp->Zbu[t] = (f64*) c_ptr;
+        c_ptr += dims->nbu[t] * sizeof(f64);
+    }
+    for (u32 t=0; t<=N; ++t) {
+        qp->Zg[t] = (f64*) c_ptr;
+        c_ptr += dims->ng[t] * sizeof(f64);
+    }
+    qp->zbx[0] = 0;
+    for (u32 t = 1; t<= N; ++t) {
+        qp->zbx[t] = (f64*) c_ptr;
+        c_ptr += dims->nbx[t] * sizeof(f64);
+    }
+    for (u32 t=0; t<N; ++t) {
+        qp->zbu[t] = (f64*) c_ptr;
+        c_ptr += dims->nbu[t] * sizeof(f64);
+    }
+    for (u32 t=0; t<=N; ++t) {
+        qp->zg[t] = (f64*) c_ptr;
+        c_ptr += dims->ng[t] * sizeof(f64);
+    }
     qp->Cx[0] = 0;
     for (u32 t = 1; t <= N; ++t) {
         qp->Cx[t] = (f64*) c_ptr;
@@ -217,7 +252,7 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     u32 max_eta = DAOCP_MIN(nu_tot, ne_tot);
     size += (max_eta + nu_tot + nx_tot - dims->nx[0]) * sizeof(f64); // u, eta, x
     size += 2 * (nb_tot + ng_tot) * sizeof(f64);
-    size += 4 * W_stride * sizeof(f64); // xi, p, dual_linear, dual_intermediate
+    size += 6 * W_stride * sizeof(f64); // xi, p, dual_linear, dual_intermediate
     size += (W_stride + 1) * W_stride * sizeof(f64); // Ld
     size += W_stride * (nu_tot + max_eta) * sizeof(f64); // Mu, Me
     size += ne_tot * max_nx * sizeof(f64); // H
@@ -226,7 +261,7 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     size += max_nx * max_nx_nu * sizeof(f64); // ABtmp
 
     size += ng_tot * sizeof(daocp_constraint_type);
-    size += nin * sizeof(u32); // active constraint status
+    size += 2 * nin * sizeof(u32); // active constraint status
     size += 3 * N * sizeof(u32); // cnu, rho, crho
     size += W_stride * sizeof(u32); // xi_sign
     size += W_stride * sizeof(daocp_constraint); // xi2con
@@ -389,9 +424,9 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
 #undef DAOCP_ASSIGN_F64_ROWS
 
     wrk->xi = (f64*) c_ptr;
-    c_ptr += (size_t) W_stride * sizeof(f64);
+    c_ptr += (size_t) 2*W_stride * sizeof(f64);
     wrk->p = (f64*) c_ptr;
-    c_ptr += (size_t) W_stride * sizeof(f64);
+    c_ptr += (size_t) 2*W_stride * sizeof(f64);
     wrk->dual_linear = (f64*) c_ptr;
     c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->dual_intermediate = (f64*) c_ptr;
@@ -423,8 +458,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     for (u32 t = 0; t <= N; ++t) {
         u32 stage_nin = dims->nbu[t] + dims->nbx[t]*(t>0 ? 1 : 0) + dims->ng[t];
         wrk->as.constraint_status[t] = (u32*) c_ptr;
-        memset(c_ptr, 0, (size_t) stage_nin * sizeof(u32));
-        c_ptr += (size_t) stage_nin * sizeof(u32);
+        memset(c_ptr, 0, (size_t) 2 * stage_nin * sizeof(u32));
+        c_ptr += (size_t) 2 * stage_nin * sizeof(u32);
     }
 
     wrk->cnu = (u32*) c_ptr;
@@ -503,6 +538,11 @@ u32 daocp_sol_memsize(daocp_dims* dims)
 {
     u32 N = dims->N;
     size_t size = (size_t) (N + 1) * sizeof(struct blasfeo_dvec);
+    for (u32 t=0; t<=N; ++t) {
+        if (t>0) size += dims->nbx[t] * sizeof(f64);
+        if (t<N) size += dims->nbu[t] * sizeof(f64);
+        size += dims->ng[t] * sizeof(f64);
+    }
 
     size += DAOCP_MEMORY_ALIGNMENT - 1;
     for (u32 t = 0; t <= N; ++t)
