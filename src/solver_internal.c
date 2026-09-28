@@ -16,7 +16,7 @@ u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* a
     return 0;
 }
 
-void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk) {
+void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp) {
     /*
         Solve linear system H p = - h
     */
@@ -33,26 +33,66 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk) {
     // Solve L'p = y
     memcpy(wrk->p, wrk->dual_intermediate, n_active*sizeof(f64));
     daocp_trsv_t(wrk->p, wrk->Ld, n_active, wrk->W_stride);
+
+    // Get slack-related direction
+    for (u32 i=0; i<n_active; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        u32 t = constr->t;
+        u32 idx = constr->idx;
+        daocp_constraint_type type = constr->type;
+        if (daocp_is_softened(wrk, t, idx, type)) {
+            f64 linear_slack;
+            switch (constr->type) {
+                case DAOCP_BOUND_U:
+                    linear_slack = qp->Zbu[t][qp->idxbu[t][idx]];
+                    break;
+                case DAOCP_BOUND_X:
+                    linear_slack = qp->Zbx[t][qp->idxbu[t][idx]];
+                    break;
+                default:
+                    linear_slack = qp->Zg[t][idx];
+                    break;
+            }
+            wrk->ps[i] = linear_slack - wrk->p[i];
+        }
+    }
 }
 
-u32 daocp_is_dual_feasible(daocp_args* args, f64* p, u32* sign, u32 n) {
+u32 daocp_is_step_dual_feasible(daocp_workspace* wrk, daocp_args* args) {
     /*
         Check that all components have the right sign.   
     */
+    u32* sign = wrk->xi_sign;
+    f64* p = wrk->p;
+    u32 n = wrk->as.n_active;
     for (u32 i=0; i<n; ++i) {
         if ((sign[i] == 0 && p[i] > args->dual_tol) || (sign[i] == 1 && p[i] < -args->dual_tol))
+            return 0;
+    }
+
+    /*
+        Check that slack duals are feasible
+    */
+    f64* ps = wrk->ps;
+    for (u32 i=0; i<n; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type) && ps[i] < -args->dual_tol)
             return 0;
     }
     return 1;
 }
 
-u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n) {
+u32 daocp_take_step(daocp_workspace* wrk) {
     /*
         Line search along p[i] < 0 for i upper bounds, and p[i] > 0
         fo i lower bounds.
             xi + t*p = 0 \iff
             t = -xi / p
     */
+    u32* xi_sign = wrk->xi_sign;
+    f64* xi = wrk->xi;
+    f64* p = wrk->p;
+    u32 n = wrk->as.n_active;
     f64 t = INFINITY;
     u32 argmin = 0;
     for (u32 i=0; i<n; ++i) {
@@ -65,7 +105,30 @@ u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n) {
             argmin = i;
         }
     }
+
+    /*
+    Check slack direction
+    */
+    f64* xis = wrk->xis;
+    f64* ps = wrk->ps;
+    for (u32 i=0; i<n; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        f64 tau = - xis[i] / ps[i];
+        if (tau < t) {
+            t = tau;
+            argmin = i;
+        }
+    }
+
+    // Take step along p
     for (u32 i=0; i<n; ++i) xi[i] += t*p[i];
+    // Take step along ps
+    for (u32 i=0; i<n; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        xis[i] += ps[i];
+    }
     return argmin;
 }
 

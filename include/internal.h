@@ -77,7 +77,9 @@ typedef struct {
     u32 neta;
 
     f64* xi;
+    f64* xis;
     f64* p;
+    f64* ps;
     f64* dual_linear;
     f64* dual_intermediate;
     f64* Ld;
@@ -100,9 +102,9 @@ typedef struct {
 
 // Solver logic
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args);
-void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk);
-u32 daocp_is_dual_feasible(daocp_args* args, f64* p, u32* sign, u32 n);
-u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n);
+void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp);
+u32 daocp_is_step_dual_feasible(daocp_workspace* wrk, daocp_args* args);
+u32 daocp_take_step(daocp_workspace* wrk);
 void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
 void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
 void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated);

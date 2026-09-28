@@ -30,8 +30,8 @@ void daocp_solve(
     for (u32 k=0; k<args->max_iter; ++k) {
         if (!wrk->singular) {
             // Solve H_W p = -g_W
-            daocp_solve_dual_eqcon_qp(wrk);
-            if (daocp_is_dual_feasible(args, wrk->p, wrk->xi_sign, wrk->as.n_active)) {
+            daocp_solve_dual_eqcon_qp(wrk, qp);
+            if (daocp_is_step_dual_feasible(wrk, args)) {
                 // If p is dual feasible, xi = p
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
                 // Add a primal-violated constraint, if it exists
@@ -47,7 +47,7 @@ void daocp_solve(
             } else {
                 // Form descent direction
                 for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
-                u32 idx_remove = daocp_take_step(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
+                u32 idx_remove = daocp_take_step(wrk);
                 daocp_remove_from_working_set(wrk, idx_remove);
             }
         } else {
@@ -66,7 +66,7 @@ void daocp_solve(
                 status_set = 1;
                 break;
             }
-            u32 idx_remove = daocp_take_step(wrk->xi, wrk->xi_sign, wrk->p, wrk->as.n_active);
+            u32 idx_remove = daocp_take_step(wrk);
             daocp_remove_from_working_set(wrk, idx_remove);
         }
     }

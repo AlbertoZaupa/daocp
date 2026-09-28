@@ -252,7 +252,7 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     u32 max_eta = DAOCP_MIN(nu_tot, ne_tot);
     size += (max_eta + nu_tot + nx_tot - dims->nx[0]) * sizeof(f64); // u, eta, x
     size += 2 * (nb_tot + ng_tot) * sizeof(f64);
-    size += 6 * W_stride * sizeof(f64); // xi, p, dual_linear, dual_intermediate
+    size += 6 * W_stride * sizeof(f64); // xi, xis, p, ps, dual_linear, dual_intermediate
     size += (W_stride + 1) * W_stride * sizeof(f64); // Ld
     size += W_stride * (nu_tot + max_eta) * sizeof(f64); // Mu, Me
     size += ne_tot * max_nx * sizeof(f64); // H
@@ -424,9 +424,13 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
 #undef DAOCP_ASSIGN_F64_ROWS
 
     wrk->xi = (f64*) c_ptr;
-    c_ptr += (size_t) 2*W_stride * sizeof(f64);
+    c_ptr += (size_t) W_stride * sizeof(f64);
+    wrk->xis = (f64*) c_ptr;
+    c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->p = (f64*) c_ptr;
-    c_ptr += (size_t) 2*W_stride * sizeof(f64);
+    c_ptr += (size_t) W_stride * sizeof(f64);
+    wrk->ps = (f64*) c_ptr;
+    c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->dual_linear = (f64*) c_ptr;
     c_ptr += (size_t) W_stride * sizeof(f64);
     wrk->dual_intermediate = (f64*) c_ptr;
