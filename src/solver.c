@@ -55,7 +55,7 @@ void daocp_solve(
         } else {
             // Retrieve a descent direction by exploiting infeasibility
             // of the dual equality constrained problem.
-            if (daocp_get_descent_dir(wrk)) {
+            if (daocp_get_descent_dir(wrk, qp)) {
                 wrk->status = DAOCP_ILL_CONDITIONED;
                 wrk->iters = k;
                 status_set = 1;

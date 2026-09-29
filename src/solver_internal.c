@@ -110,6 +110,8 @@ u32 daocp_take_step(daocp_workspace* wrk) {
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        if ((xi_sign[i] == 0 && ps[i] <DAOCP_ZERO_TOL) || 
+            (xi_sign[i] == 1 && ps[i] > -DAOCP_ZERO_TOL)) continue;
         f64 tau = - xis[i] / ps[i];
         if (tau < t) {
             t = tau;
@@ -789,7 +791,7 @@ void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_id
     daocp_update_working_set__remove(wrk, xi_idx);
 }
 
-u32 daocp_get_descent_dir(daocp_workspace* wrk) {
+u32 daocp_get_descent_dir(daocp_workspace* wrk, daocp_qp* qp) {
     u32 n_active = wrk->as.n_active;
     u32 W_stride = wrk->W_stride;
     u32 singular_idx = wrk->singular_idx;
@@ -801,7 +803,12 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk) {
         wrk->p[i] = -wrk->Ld[singular_idx*W_stride + i];
     daocp_trsv_t(wrk->p, wrk->Ld, singular_idx, W_stride);
     // Compute the direction for slack sign constraints multipliers
-    for (u32 i=0; i<wrk->as.n_active; ++i) wrk->ps[i] = -wrk->p[i];
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* c = wrk->as.xi2con+i;
+        if (daocp_is_softened(wrk, c->t, c->idx, c->type)) continue;
+        f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, c->t, c->idx, c->type);
+        wrk->ps[i] = -wrk->p[i]*rho1_inv;
+    }
 
     // Enforce p' d < 0. We only need to consider the contribution
     // from non-softened constraints, p[soft] = 0. Moreover, the 
@@ -823,13 +830,22 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk) {
 u32 daocp_check_infeasibility_from_descent_dir(daocp_workspace* wrk) {
     u32 n = wrk->as.n_active;
     f64* p = wrk->p;
+    f64* ps = wrk->ps;
     u32* sign = wrk->xi_sign;
 
+    // Check in constraint space
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con+i;
         if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
 
         if ((sign[i] == 1 && p[i] < -DAOCP_ZERO_TOL) || (sign[i] == 0 && p[i] > DAOCP_ZERO_TOL)) return 0;
+    }
+    // Check in slack space
+    for (u32 i=0; i<n; ++i) {
+        daocp_constraint* c = wrk->as.xi2con+i;
+        if (daocp_is_softened(wrk, c->t, c->idx, c->type)) continue;
+        
+        if ((sign[i] == 1 && ps[i] < -DAOCP_ZERO_TOL) || (sign[i] == 0 && ps[i] > DAOCP_ZERO_TOL)) return 0;
     }
 
     return 1; 

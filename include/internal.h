@@ -110,7 +110,7 @@ u32 daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args,
 u32 daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
 void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated, u32 is_slack);
 void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_idx);
-u32 daocp_get_descent_dir(daocp_workspace* wrk);
+u32 daocp_get_descent_dir(daocp_workspace* wrk, daocp_qp* qp);
 u32 daocp_check_infeasibility_from_descent_dir(daocp_workspace* wrk);
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol);
 u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
