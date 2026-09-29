@@ -7,6 +7,9 @@
 #include <internal.h>
 #include <math.h>
 
+static inline f64 get_slack_1norm_penalty(daocp_workspace* wrk, daocp_qp* qp, u32 t, u32 idx, daocp_constraint_type type);
+static inline f64 get_slack_2norm_penalty(daocp_workspace* wrk, daocp_qp* qp, u32 t, u32 idx, daocp_constraint_type type);
+
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args) {
     // Check H x0 == h
     memcpy(wrk->tmp1, wrk->h, wrk->nH0*sizeof(f64));
@@ -34,26 +37,15 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp) {
     memcpy(wrk->p, wrk->dual_intermediate, n_active*sizeof(f64));
     daocp_trsv_t(wrk->p, wrk->Ld, n_active, wrk->W_stride);
 
-    // Get slack-related direction
+    // Get slack-related dual term
     for (u32 i=0; i<n_active; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         u32 t = constr->t;
         u32 idx = constr->idx;
         daocp_constraint_type type = constr->type;
         if (daocp_is_softened(wrk, t, idx, type)) {
-            f64 linear_slack;
-            switch (constr->type) {
-                case DAOCP_BOUND_U:
-                    linear_slack = qp->Zbu[t][qp->idxbu[t][idx]];
-                    break;
-                case DAOCP_BOUND_X:
-                    linear_slack = qp->Zbx[t][qp->idxbu[t][idx]];
-                    break;
-                default:
-                    linear_slack = qp->Zg[t][idx];
-                    break;
-            }
-            wrk->ps[i] = linear_slack - wrk->p[i];
+            f64 tmp = get_slack_1norm_penalty(wrk, qp, t, idx, type) - wrk->p[i];
+            wrk->ps[i] = wrk->xi_sign[i] == 0 ? -tmp : tmp;
         }
     }
 }
@@ -76,7 +68,8 @@ u32 daocp_is_step_dual_feasible(daocp_workspace* wrk, daocp_args* args) {
     f64* ps = wrk->ps;
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
-        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type) && ps[i] < -args->dual_tol)
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type) && 
+            (sign[i] == 0 && ps[i] > args->dual_tol) || (sign[i] == 1 && ps[i] < -args->dual_tol))
             return 0;
     }
     return 1;
@@ -117,7 +110,7 @@ u32 daocp_take_step(daocp_workspace* wrk) {
         f64 tau = - xis[i] / ps[i];
         if (tau < t) {
             t = tau;
-            argmin = i;
+            argmin = n + i; // n offset means we are removing slack sign constraint
         }
     }
 
@@ -199,7 +192,7 @@ static inline u32 check_constraints_at_t(
     return 0;
 }
 
-void daocp_selection_greedy(
+u32 daocp_selection_greedy(
     daocp_workspace* wrk, daocp_qp* qp, 
     daocp_args* args, daocp_constraint* violated) {
     u32 N = qp->dims.N;
@@ -215,6 +208,18 @@ void daocp_selection_greedy(
     f64** Cu = qp->Cu; f64** Cx = qp->Cx;
     f64** lg = wrk->lg_wrk; f64** ug = wrk->ug_wrk;
 
+    // Check slack signs
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        f64 unscaled_s = wrk->xi[i] - get_slack_1norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
+        if ((wrk->xi_sign[i] == 0 && unscaled_s > args->primal_tol) ||
+            (wrk->xi_sign[i] == 1 && unscaled_s < -args->primal_tol)) {
+            populate_constraint_struct(violated, constr->t, constr->idx, constr->type, 0);
+            return 1; // A slack sign constraint was activated
+        }
+    }
+
     // Compute feedforward terms
     compute_feedforwards(wrk, qp);
 
@@ -229,13 +234,14 @@ void daocp_selection_greedy(
     blasfeo_dvecsc(nu[0], -1.0, &v0, 0);
     DAOCP_TRSVLQR_T(v0, v1, wrk->Luu, wrk->Lue, wrk->Lee, nu[0], rho[0]);
     if (check_bounds_at_t(wrk, args, 0, nbu[0], idxbu[0], u[0], lbu[0], ubu[0], 0, violated))
-        return;
-    if (check_constraints_at_t(wrk, args, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) return;
+        return 0;
+    if (check_constraints_at_t(wrk, args, 0, ng[0], nx[0], nu[0], contypes[0], Cx[0], Cu[0], x[0], u[0], lg[0], ug[0], violated)) 
+        return 0;
     // State evolution
     v1.pa = x[1];
     blasfeo_dgemv_t(nu[0], nx[1], 1.0, &qp->BAwt[0], 0, 0, &v0, 0, 0.0, &v1, 0, &v1, 0);
     if (check_bounds_at_t(wrk, args, 1, qp->dims.nbx[1], idxbx[1], x[1], lbx[1], ubx[1], 1, violated))
-        return;
+        return 0;
 
     for (u32 t=1; t<N; ++t) {
         // Compute control
@@ -248,10 +254,10 @@ void daocp_selection_greedy(
 
         // Check control bounds
         if (check_bounds_at_t(wrk, args, t, nbu[t], idxbu[t], u[t], lbu[t], ubu[t], 0, violated))
-            return;
+            return 0;
         // Check constraints at t
         if (check_constraints_at_t(wrk, args, t, ng[t], nx[t], nu[t], contypes[t], Cx[t], Cu[t], x[t], u[t], lg[t], ug[t], violated))
-            return; 
+            return 0; 
 
         // Propagate state 
         memcpy(wrk->GEtmp, wrk->u[t], nu[t]*sizeof(f64));
@@ -263,14 +269,15 @@ void daocp_selection_greedy(
 
         // Check state bounds
         if (check_bounds_at_t(wrk, args, t+1, nbx[t+1], idxbx[t+1], x[t+1], lbx[t+1], ubx[t+1], 1, violated))
-            return;
+            return 0;
     }
 
     // Check constraints on terminal state
     check_constraints_at_t(wrk, args, N, ng[N], nx[N], 0, contypes[N], Cx[N], 0, x[N], 0, lg[N], ug[N], violated);
+    return 0;
 }
 
-void daocp_selection_most_violated(
+u32 daocp_selection_most_violated(
     daocp_workspace* wrk, daocp_qp* qp, 
     daocp_args* args, daocp_constraint* violated) {
     u32 N = qp->dims.N;
@@ -321,7 +328,21 @@ void daocp_selection_most_violated(
 
     // Find the inactive constraint with the largest violation.
     f64 max_violation = args->primal_tol;
+    u32 is_slack;
     violated->t = N+1;
+    // Start with slack sign constraints
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con + i;
+        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        f64 tmps = wrk->xi[i] - get_slack_1norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
+        if ((wrk->xi_sign[i] == 0 && tmps > args->primal_tol) || (wrk->xi_sign[i] == 1 && tmps < -args->primal_tol)) {
+            max_violation = wrk->xi_sign[i] == 0 ? tmps : -tmps;
+            is_slack = 1;
+            populate_constraint_struct(violated, constr->t, constr->idx, constr->type, 0);
+        }
+    }
+
+    // Actual constraints
     for (u32 t=0; t<=N; ++t) {
         if (t < N) {
             // Check control bounds
@@ -332,11 +353,13 @@ void daocp_selection_most_violated(
                 f64 tmp = u[t][idx] - ubu[t][i];
                 if (tmp > max_violation) {
                     max_violation = tmp;
+                    is_slack = 0;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 1);
                 }
                 tmp = lbu[t][i] - u[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
+                    is_slack = 0;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_U, 0);
                 }
             }
@@ -351,11 +374,13 @@ void daocp_selection_most_violated(
                 f64 tmp = x[t][idx] - ubx[t][i];
                 if (tmp > max_violation) {
                     max_violation = tmp;
+                    is_slack = 0;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 1);
                 }
                 tmp = lbx[t][i] - x[t][idx];
                 if (tmp > max_violation) {
                     max_violation = tmp;
+                    is_slack = 0;
                     populate_constraint_struct(violated, t, i, DAOCP_BOUND_X, 0);
                 }
             }
@@ -377,16 +402,18 @@ void daocp_selection_most_violated(
             f64 tmp = val - ug[t][i];
             if (tmp > max_violation) {
                 max_violation = tmp;
+                is_slack = 0;
                 populate_constraint_struct(violated, t, i, type, 1);
             }
             tmp = lg[t][i] - val;
             if (tmp > max_violation) {
                 max_violation = tmp;
+                is_slack = 0;
                 populate_constraint_struct(violated, t, i, type, 0);
             }
         }
     }
-
+    return is_slack;
 }
 
 static void compute_M_row(
@@ -519,7 +546,60 @@ static void daocp_update_working_set__add(daocp_workspace* wrk, daocp_constraint
     else wrk->as.max_t = DAOCP_MAX(wrk->as.max_t, t-1);
 }
 
-void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated) {
+static void update_cholesky_remove_regularization(daocp_workspace* wrk, u32 idx, f64 r) {
+    u32 n_active = wrk->as.n_active;
+    u32 W_stride = wrk->W_stride;
+
+    // Use first unused row of Ld as skratch for the update
+    f64* l = wrk->Ld + n_active*W_stride + idx;
+    l[idx] = r;
+
+    // Perform rank1 downdate of bottom-right lower triangle
+    f64 lii, lii_new, a, b, tmp;
+    for (u32 i=idx; i<n_active; ++i) {
+        lii = 1 / wrk->Ld[i*W_stride+i]; // Before the update L is nonsingular, no problems here
+        tmp = sqrt(DAOCP_PW2(lii) - DAOCP_PW2(l[i-idx])); // This may become 0
+
+        // Check for singularity. If the diagonal element is zero,
+        // the whole column is set to zero and we can then terminate
+        // the algorithm.
+        if (tmp < DAOCP_ZERO_TOL) {
+            wrk->singular = 1;
+            lii_new = 0.0;
+            for (u32 j=i; j<n_active; ++j) wrk->Ld[j*W_stride+i] = 0.0;
+            return;
+        } else lii_new = 1 / tmp;
+        wrk->Ld[i*W_stride+i] = lii_new;
+
+        // Update rank1 term
+        a = l[i-idx] * lii_new;
+        b = lii * lii_new;
+        for (u32 j=i+1; j<n_active; ++j) {
+            lii = l[j-idx];
+            lii_new = wrk->Ld[j*W_stride + i];
+            l[j-idx] = lii * b - lii_new * a;
+            wrk->Ld[j*W_stride + i] = b * lii_new - a * lii;
+        }
+    }
+}
+
+void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated, u32 is_slack) {
+    if (is_slack) {
+        u32 xi_idx = daocp_get_xi_idx(wrk, violated);
+        // Invalidate part of cached Ly = -d solution
+        wrk->as.n_valid_intermediate = xi_idx;
+
+        // Remove regularization term from dual hessian
+        f64 rho_1_inv = get_slack_2norm_penalty(wrk, qp, violated->t, violated->idx, violated->type);
+        f64 rho_1_invsqrt = sqrt(rho_1_inv);
+        update_cholesky_remove_regularization(wrk, xi_idx, rho_1_invsqrt);
+
+        // Remove slack-related linear term
+        f64 l = rho_1_inv * get_slack_1norm_penalty(wrk, qp, violated->t, violated->idx, violated->type);
+        wrk->dual_linear[xi_idx] += wrk->xi_sign[xi_idx] == 0 ? -l : l;
+        return;
+    }
+
     u32 t = violated->t;
     u32 idx = violated->idx;
     daocp_constraint_type type = violated->type;
@@ -667,6 +747,19 @@ u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_
     return base;
 }
 
+u32 daocp_get_xi_idx(daocp_workspace* wrk, daocp_constraint* constr) {
+    u32 t = constr->t;
+    u32 idx = constr->idx;
+    daocp_constraint_type type = constr->type;
+
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        if (t != (wrk->as.xi2con+i)->t) continue;
+        if (type != (wrk->as.xi2con+i)->type) continue;
+        if (idx != (wrk->as.xi2con+1)->idx) continue;
+        return i;
+    }
+}
+
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
     return wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type)];
 }
@@ -677,6 +770,28 @@ u32 daocp_is_soft(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type ty
 
 u32 daocp_is_softened(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
     return wrk->as.constraint_status[t][2*daocp_constraint_idx(wrk, t, idx, type) + 1];
+}
+
+static inline f64 get_slack_1norm_penalty(daocp_workspace* wrk, daocp_qp* qp, u32 t, u32 idx, daocp_constraint_type type) {
+    switch (type) {
+        case DAOCP_BOUND_U:
+            return qp->zbu[t][idx];
+        case DAOCP_BOUND_X:
+            return qp->zbx[t][idx];
+        default:
+            return qp->zg[t][idx];
+    }
+}
+
+static inline f64 get_slack_2norm_penalty(daocp_workspace* wrk, daocp_qp* qp, u32 t, u32 idx, daocp_constraint_type type) {
+    switch (type) {
+        case DAOCP_BOUND_U:
+            return qp->Zbu[t][idx];
+        case DAOCP_BOUND_X:
+            return qp->Zbx[t][idx];
+        default:
+            return qp->Zg[t][idx];
+    }
 }
 
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status) {
