@@ -231,7 +231,9 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
         dims, &nx_tot, &nu_tot, &nb_tot, &ng_tot, &ne_tot,
         &max_nx, &max_nu);
     u32 nin = nb_tot + ng_tot;
-    u32 W_stride = DAOCP_MIN(nu_tot, nin) + 1;
+    // u32 W_stride = DAOCP_MIN(nu_tot, nin) + 1;
+    // Should be DAOCP_MIN(nin, nu_tot+n_soft_constraints)
+    u32 W_stride = nin+1U;
     u32 max_nx_nu = DAOCP_MAX(max_nx, max_nu);
     u32 size = sizeof(daocp_workspace);
 
@@ -330,7 +332,9 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
         &max_nx, &max_nu);
     u32 max_eta = DAOCP_MIN(nu_tot, ne_tot);
     u32 nin = nb_tot + ng_tot;
-    u32 W_stride = DAOCP_MIN(nu_tot, nin) + 1U;
+    //u32 W_stride = DAOCP_MIN(nu_tot, nin) + 1U;
+    // TODO: should be DAOCP_MIN(nin, nu_tot+n_soft_constraints)
+    u32 W_stride = nin+1U;
     u32 max_nx_nu = DAOCP_MAX(max_nx, max_nu);
     char* c_ptr = (char*) memory;
     daocp_workspace* wrk = (daocp_workspace*) c_ptr;
