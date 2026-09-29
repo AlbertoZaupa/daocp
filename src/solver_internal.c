@@ -604,7 +604,7 @@ void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constrai
     if (is_slack) {
         u32 xi_idx = daocp_get_xi_idx(wrk, violated);
         // Invalidate part of cached Ly = -d solution
-        wrk->as.n_valid_intermediate = xi_idx;
+        wrk->as.n_valid_intermediate = DAOCP_MIN(xi_idx, wrk->as.n_valid_intermediate);
 
         // Remove regularization term from dual hessian
         f64 rho_1_inv = get_slack_2norm_penalty(wrk, qp, violated->t, violated->idx, violated->type);
@@ -750,7 +750,7 @@ void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_id
     if (is_slack) {
         xi_idx -= wrk->as.n_active;
         // Invalidate part of the cached Ly = -d solution
-        wrk->as.n_valid_intermediate = xi_idx;
+        wrk->as.n_valid_intermediate = DAOCP_MIN(xi_idx, wrk->as.n_valid_intermediate);
 
         daocp_constraint* constr = wrk->as.xi2con + xi_idx;
         f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
