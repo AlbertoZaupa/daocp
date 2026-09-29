@@ -60,7 +60,7 @@ void daocp_solve(
                 break;
             }
             // Check for an infeasibility certificate
-            if (daocp_check_infeasibility_from_descent_dir(wrk->p, wrk->xi_sign, wrk->as.n_active)) {
+            if (daocp_check_infeasibility_from_descent_dir(wrk)) {
                 wrk->status = DAOCP_INFEASIBLE;
                 wrk->iters = k;
                 status_set = 1;

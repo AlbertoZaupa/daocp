@@ -521,6 +521,7 @@ static void update_cholesky_add(daocp_workspace* wrk) {
             daocp_dot(wrk->Ld+n_active*wrk->W_stride, wrk->Ld+n_active*wrk->W_stride, n_active);
     if (wrk->Ld[n_active*wrk->W_stride + n_active] < DAOCP_ZERO_TOL) {
         wrk->singular = 1;
+        wrk->singular_idx = n_active;
         wrk->Ld[n_active*wrk->W_stride + n_active] = 0.0;
     } else wrk->Ld[n_active*wrk->W_stride + n_active] = 1 / sqrt(wrk->Ld[n_active*wrk->W_stride + n_active]);
 }
@@ -565,6 +566,7 @@ static void update_cholesky_remove_regularization(daocp_workspace* wrk, u32 idx,
         // the algorithm.
         if (tmp < DAOCP_ZERO_TOL) {
             wrk->singular = 1;
+            wrk->singular_idx = i;
             lii_new = 0.0;
             for (u32 j=i; j<n_active; ++j) wrk->Ld[j*W_stride+i] = 0.0;
             return;
@@ -762,25 +764,40 @@ void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_id
 u32 daocp_get_descent_dir(daocp_workspace* wrk) {
     u32 n_active = wrk->as.n_active;
     u32 W_stride = wrk->W_stride;
+    u32 singular_idx = wrk->singular_idx;
 
-    // Solve LL'p = 0, p != 0. Assume L_{n_active, n_active} = 0.
+    // Solve LL'p = 0, p != 0. Assume L_{:, singular_idx} = 0.
     memset(wrk->p, 0, n_active*sizeof(f64));
-    wrk->p[n_active-1] = 1.0;
-    for (u32 i=0; i<n_active-1; ++i)
-        wrk->p[i] = -wrk->Ld[(n_active-1)*W_stride + i];
-    daocp_trsv_t(wrk->p, wrk->Ld, n_active-1, W_stride);
+    wrk->p[singular_idx-1] = 1.0;
+    for (u32 i=0; i<singular_idx-1; ++i)
+        wrk->p[i] = -wrk->Ld[(singular_idx-1)*W_stride + i];
+    daocp_trsv_t(wrk->p, wrk->Ld, singular_idx-1, W_stride);
 
-    // Enforce p' b < 0.
-    f64 dotv = daocp_dot(wrk->p, wrk->dual_linear, n_active);
+    // Enforce p' d < 0. We only need to consider the contribution
+    // from non-softened constraints.
+    f64 dotv = 0.0;
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con+i;
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        dotv += wrk->dual_linear[i] * wrk->dual_linear[i];
+    }
     if (dotv >= -DAOCP_ZERO_TOL && dotv <= DAOCP_ZERO_TOL) return 1;
     if (dotv > DAOCP_ZERO_TOL)
         daocp_negate(wrk->p, n_active);
     return 0;
 }
 
-u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n) {
-    for (u32 i=0; i<n; ++i)
+u32 daocp_check_infeasibility_from_descent_dir(daocp_workspace* wrk) {
+    u32 n = wrk->as.n_active;
+    f64* p = wrk->p;
+    u32* sign = wrk->xi_sign;
+
+    for (u32 i=0; i<n; ++i) {
+        daocp_constraint* constr = wrk->as.xi2con+i;
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+
         if ((sign[i] == 1 && p[i] < -DAOCP_ZERO_TOL) || (sign[i] == 0 && p[i] > DAOCP_ZERO_TOL)) return 0;
+    }
 
     return 1; 
 }
