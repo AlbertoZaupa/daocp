@@ -46,7 +46,7 @@ def solve_ocp(verbose=False):
     # Instantiate the solver
     solver = OCPsolver(
             A=A, B=B, Q=Q, R=R, lbu=lbu, ubu=ubu, lbx=lbx, ubx=ubx,
-            Zbx=Zbx, zbx=zbx, nx=nx, nu=nu, N=N, x0=x0
+            Zbx=Zbx, zbx=zbx, N=N, x0=x0
         )
 
     # Display the setup time (which excludes validation of problem data)

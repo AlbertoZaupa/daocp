@@ -464,14 +464,11 @@ public:
               py::object lbx, py::object ubx,
               py::object lbu, py::object ubu,
               py::object C, py::object c_l, py::object c_u,
-              py::object x0, u32 N, u32 nx, u32 nu, py::object max_iter_arg,
+              py::object x0, u32 N, py::object max_iter_arg,
               py::object greedy_arg, py::object pr_tol_arg, py::object du_tol_arg,
               py::object Zbx, py::object Zbu, py::object Zg,
               py::object zbx, py::object zbu, py::object zg)
-        : N_(N), nx_(nx), nu_(nu),
-          nx_dims_(N + 1, nx), nu_dims_(N + 1, nu),
-          nbu_dims_(N + 1, 0), nbx_dims_(N + 1, 0),
-          ng_dims_(N + 1, 0), ne_dims_(N + 1, 0) {
+        : N_(N) {
         daocp_args defaults;
         daocp_args_set_default(&defaults);
         const u32 max_iter = max_iter_arg.is_none() ? defaults.max_iter : max_iter_arg.cast<u32>();
@@ -479,14 +476,42 @@ public:
                                                  : greedy_arg.cast<bool>();
         const f64 pr_tol = pr_tol_arg.is_none() ? defaults.primal_tol : pr_tol_arg.cast<f64>();
         const f64 du_tol = du_tol_arg.is_none() ? defaults.dual_tol : du_tol_arg.cast<f64>();
-        if (!N || !nx || !nu || !max_iter)
-            throw py::value_error("N, nx, nu, and max_iter must be positive");
+        if (!N || !max_iter)
+            throw py::value_error("N and max_iter must be positive");
         if (!std::isfinite(pr_tol) || !std::isfinite(du_tol) || pr_tol <= 0 || du_tol <= 0)
             throw py::value_error("pr_tol and du_tol must be finite and positive");
-        nu_dims_[N] = 0;
+        // Infer fixed state/control dimensions from either stage matrices or
+        // horizon arrays (including lists of equally shaped stage matrices).
+        Array A_input = Array::ensure(A);
+        Array B_input = Array::ensure(B);
+        if (A.is_none() || !A_input || (A_input.ndim() != 2 && A_input.ndim() != 3))
+            throw py::value_error("A must be a matrix or a horizon of matrices");
+        if (B.is_none() || !B_input || (B_input.ndim() != 2 && B_input.ndim() != 3))
+            throw py::value_error("B must be a matrix or a horizon of matrices");
+        const py::ssize_t state_dim = A_input.shape(A_input.ndim() - 1);
+        const py::ssize_t input_dim = B_input.shape(B_input.ndim() - 1);
+        if (state_dim <= 0 || input_dim <= 0 ||
+            state_dim > std::numeric_limits<u32>::max() ||
+            input_dim > std::numeric_limits<u32>::max())
+            throw py::value_error("A and B must define positive state and control dimensions within uint32 range");
+        if (A_input.shape(A_input.ndim() - 2) != state_dim)
+            throw py::value_error("A must be square at every stage");
+        if (B_input.shape(B_input.ndim() - 2) != state_dim)
+            throw py::value_error("B must have the same number of rows as A at every stage");
+        const u32 nx = static_cast<u32>(state_dim);
+        const u32 nu = static_cast<u32>(input_dim);
 
-        Array Ap = horizon_array(A, "A", N, {nx, nx}, true);
-        Array Bp = horizon_array(B, "B", N, {nx, nu}, true);
+        Array Ap = horizon_array(A_input, "A", N, {nx, nx}, true);
+        Array Bp = horizon_array(B_input, "B", N, {nx, nu}, true);
+        nx_ = nx;
+        nu_ = nu;
+        nx_dims_.assign(N + 1, nx);
+        nu_dims_.assign(N + 1, nu);
+        nu_dims_[N] = 0;
+        nbu_dims_.assign(N + 1, 0);
+        nbx_dims_.assign(N + 1, 0);
+        ng_dims_.assign(N + 1, 0);
+        ne_dims_.assign(N + 1, 0);
         Array wp = horizon_array(w, "w", N, {nx}, false);
         Array Qp = horizon_array(Q, "Q", N + 1, {nx, nx}, false);
         Array Rp = horizon_array(R, "R", N, {nu, nu}, true);
@@ -820,7 +845,7 @@ PYBIND11_MODULE(daocp, module) {
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, u32, u32, u32,
+                      py::object, u32,
                       py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object,
                       py::object, py::object, py::object>(),
@@ -831,7 +856,7 @@ PYBIND11_MODULE(daocp, module) {
              py::arg("lbu") = py::none(), py::arg("ubu") = py::none(),
              py::arg("C") = py::none(), py::arg("c_l") = py::none(),
              py::arg("c_u") = py::none(), py::arg("x0") = py::none(),
-             py::arg("N"), py::arg("nx"), py::arg("nu"), py::arg("max_iter") = py::none(),
+             py::arg("N"), py::arg("max_iter") = py::none(),
              py::arg("greedy") = py::none(), py::arg("pr_tol") = py::none(),
              py::arg("du_tol") = py::none(),
              py::arg("Zbx") = py::none(), py::arg("Zbu") = py::none(),

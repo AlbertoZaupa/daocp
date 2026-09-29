@@ -58,8 +58,6 @@ def solve_ocp(verbose=False):
         None, # cu[k] mixed constraints upper bounds. None if and only if C = None.
         x0,   # Initial state (just set to zero if unknown at solver setup).
         N,    # Horizon length
-        nx,   # number of state variables
-        nu,   # number of input variables
         max_iter,      # maximum number of iterations
         greedy=False   # constraint selection heuristic. Simple problem? => greedy=True
     )
@@ -88,10 +86,7 @@ def time_ocp():
     nreps = 1000
     total = 0
     for i in range(nreps):
-        solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, lbx, ubx, lbu, ubu,
-                        None, None, None,
-                        x0, N, nx, nu, max_iter)
+        solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbx=lbx, ubx=ubx, lbu=lbu, ubu=ubu, N=N, x0=x0)
         res = solver.solve()
         total += res.info.solve_time
     print(f"Average solve time: {(total/nreps):3f} us.")
@@ -101,10 +96,7 @@ def solve_mpc(verbose=False):
         Receding horizon setting: at every sample time we update the
         solver's x0 value.
     """
-    solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, lbx, ubx, lbu, ubu,
-                        None, None, None,
-                        x0, N, nx, nu, max_iter)
+    solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbx=lbx, ubx=ubx, lbu=lbu, ubu=ubu, x0=x0, N=N)
     x = x0.copy()
 
     # Simulate N steps.
@@ -122,4 +114,4 @@ def solve_mpc(verbose=False):
         print()
 
 if __name__ == '__main__':
-    time_ocp()
+    solve_mpc()

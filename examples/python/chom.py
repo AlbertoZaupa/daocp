@@ -40,27 +40,9 @@ def solve_ocp():
     """
     # Instantiate the solver
     solver = daocp.OCPsolver(
-        A,      # A matrix. Can also be list [A0, A1, ..., A_{N-1}]
-        B,      # B matrix. Can also be list [B0, B1, ..., B_{N-1}]
-        None,   # w[k] affine terms. None => w[k] = 0
-        Q,      # Q matrix. Here terminal cost == stage cost. Can also be a list
-        R,      # R matrix. Can also be list [R0, R1, ..., R_{N-1}]
-        None,   # S matrix (mixing quadratic term). None => S[k] = 0
-        None,   # q[k] state-linear terms. None => q[k] = 0
-        None,   # r[k] input-linear terms. None => r[k] = 0
-        lbx,    # state lower-bounds. If None, lbx[k] = -INF
-        ubx,    # state upper-bounds. If None, ubx[k] = INF
-        lbu,    # input lower-bounds. If None, lbu[k] = -INF
-        ubu,    # input upper bounds. If None, ubu[k] = INF
-        None,   # C[k] = [Cu[k] Cx[k]]. If None, no mixed constraints
-        None,   # cl[k] lower bounds for mixed constraints
-        None,   # cu[k] upper bounds for mixed constraints
-        x0,     # intial state (set to zero if unknown at setup)
-        N,      # horizon length
-        nx,     # number of states
-        nu,     # number of controls
-        greedy=False    # constraint selection strategy. Greedy=True good for simple prob.
-    )
+            A=A, B=B, Q=Q, R=R, lbx=lbx, ubx=ubx, lbu=lbu, ubu=ubu,
+            N=N, x0=x0
+        )
 
     # Print setup time (excludes problem data validation)
     print(f"Setup time: {solver.setup_time:.4f} us.")
