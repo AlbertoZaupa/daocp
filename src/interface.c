@@ -542,12 +542,6 @@ u32 daocp_sol_memsize(daocp_dims* dims)
 {
     u32 N = dims->N;
     size_t size = (size_t) (N + 1) * sizeof(struct blasfeo_dvec);
-    for (u32 t=0; t<=N; ++t) {
-        if (t>0) size += dims->nbx[t] * sizeof(f64);
-        if (t<N) size += dims->nbu[t] * sizeof(f64);
-        size += dims->ng[t] * sizeof(f64);
-    }
-
     size += DAOCP_MEMORY_ALIGNMENT - 1;
     for (u32 t = 0; t <= N; ++t)
         size += blasfeo_memsize_dvec(dims->nu[t] + dims->nx[t]);
