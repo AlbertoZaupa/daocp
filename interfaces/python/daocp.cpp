@@ -248,7 +248,8 @@ std::vector<double> general_bound_stage(
         throw py::type_error(std::string(name) + " must be a real-valued array");
     py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
     if (py::len(sequence) != stages)
-        throw py::value_error(std::string(name) + " must contain N + 1 stages");
+        throw py::value_error(std::string(name) + " must contain " +
+                              std::to_string(stages) + " stages");
     py::object item = sequence[stage];
     if (item.is_none()) return std::vector<double>(rows, trivial_value);
     Array parsed = fixed_array(item, name, {static_cast<py::ssize_t>(rows)});
@@ -269,7 +270,34 @@ struct StageData {
     std::vector<double> Du;
     std::vector<double> Dx;
     std::vector<double> d;
+    std::vector<double> Zbu, zbu, Zbx, zbx, Zg, zg;
 };
+
+// Python accepts Z itself; the native solver stores its inverse.
+std::pair<double, double> slack_penalty(double Z, double z, const char* name,
+                                       u32 stage, u32 row, bool equality) {
+    const std::string location = stage_name(name, stage) + " row " + std::to_string(row);
+    if (!(Z > 0.0))
+        throw py::value_error(location + " must be positive or np.inf");
+    if (equality) {
+        if (std::isfinite(Z)) {
+            const std::string message = location +
+                ": DAOCP does not support softening of equality constraints at the moment; "
+                "ignoring the slack penalties for this equality";
+            if (PyErr_WarnEx(PyExc_UserWarning, message.c_str(), 1) < 0)
+                throw py::error_already_set();
+        }
+        return {0.0, 0.0};
+    }
+    // Ignore the linear penalty for hard constraints, including its value validation.
+    if (Z == kInfinity) return {0.0, 0.0};
+    if (!std::isfinite(z) || z < 0.0)
+        throw py::value_error(location + " requires a finite, nonnegative linear slack penalty");
+    const double inverse = 1.0 / Z;
+    if (!std::isfinite(inverse))
+        throw py::value_error(location + " is too small to invert");
+    return {inverse, z};
+}
 
 void append_equality(StageData& stage, const double* Du, u32 nu,
                      const double* Dx, u32 nx, double value) {
@@ -294,6 +322,8 @@ void append_unit_equality(StageData& stage, u32 nu, u32 nx,
 void process_simple_bounds(StageData& stage,
                            const std::vector<double>& lower,
                            const std::vector<double>& upper,
+                           const std::vector<double>& Z,
+                           const std::vector<double>& z,
                            bool input, u32 nu, u32 nx, u32 solver_stage,
                            const char* lower_name, const char* upper_name) {
     const u32 dimension = input ? nu : nx;
@@ -302,16 +332,22 @@ void process_simple_bounds(StageData& stage,
         const double ub = upper[index];
         check_bound_pair(lb, ub, lower_name, upper_name, solver_stage, index);
         if (trivial_pair(lb, ub)) continue;
+        const auto penalty = slack_penalty(Z[index], z[index], input ? "Zbu" : "Zbx",
+                                           solver_stage, index, lb == ub);
         if (lb == ub) {
             append_unit_equality(stage, nu, nx, input, index, lb);
         } else if (input) {
             stage.idxbu.push_back(index);
             stage.lbu.push_back(lb);
             stage.ubu.push_back(ub);
+            stage.Zbu.push_back(penalty.first);
+            stage.zbu.push_back(penalty.second);
         } else {
             stage.idxbx.push_back(index);
             stage.lbx.push_back(lb);
             stage.ubx.push_back(ub);
+            stage.Zbx.push_back(penalty.first);
+            stage.zbx.push_back(penalty.second);
         }
     }
 }
@@ -428,16 +464,25 @@ public:
               py::object lbx, py::object ubx,
               py::object lbu, py::object ubu,
               py::object C, py::object c_l, py::object c_u,
-              py::object x0, u32 N, u32 nx, u32 nu, u32 max_iter,
-              bool greedy, f64 pr_tol, f64 du_tol)
+              py::object x0, u32 N, u32 nx, u32 nu, py::object max_iter_arg,
+              py::object greedy_arg, py::object pr_tol_arg, py::object du_tol_arg,
+              py::object Zbx, py::object Zbu, py::object Zg,
+              py::object zbx, py::object zbu, py::object zg)
         : N_(N), nx_(nx), nu_(nu),
           nx_dims_(N + 1, nx), nu_dims_(N + 1, nu),
           nbu_dims_(N + 1, 0), nbx_dims_(N + 1, 0),
           ng_dims_(N + 1, 0), ne_dims_(N + 1, 0) {
+        daocp_args defaults;
+        daocp_args_set_default(&defaults);
+        const u32 max_iter = max_iter_arg.is_none() ? defaults.max_iter : max_iter_arg.cast<u32>();
+        const bool greedy = greedy_arg.is_none() ? defaults.selection == DAOCP_SELECT_GREEDY
+                                                 : greedy_arg.cast<bool>();
+        const f64 pr_tol = pr_tol_arg.is_none() ? defaults.primal_tol : pr_tol_arg.cast<f64>();
+        const f64 du_tol = du_tol_arg.is_none() ? defaults.dual_tol : du_tol_arg.cast<f64>();
         if (!N || !nx || !nu || !max_iter)
             throw py::value_error("N, nx, nu, and max_iter must be positive");
-        if (pr_tol <= 0 || du_tol <= 0) 
-            throw py::value_error("pr_tol and du_tol must be positive");
+        if (!std::isfinite(pr_tol) || !std::isfinite(du_tol) || pr_tol <= 0 || du_tol <= 0)
+            throw py::value_error("pr_tol and du_tol must be finite and positive");
         nu_dims_[N] = 0;
 
         Array Ap = horizon_array(A, "A", N, {nx, nx}, true);
@@ -448,24 +493,36 @@ public:
         Array Sp = horizon_array(S, "S", N, {nu, nx}, false);
         Array qp = horizon_array(q, "q", N + 1, {nx}, false);
         Array rp = horizon_array(r, "r", N, {nu}, false);
-        Array x0p = fixed_array(x0, "x0", {nx});
+        Array x0p;
+        if (x0.is_none()) {
+            x0p = Array(static_cast<py::ssize_t>(nx));
+            std::fill_n(x0p.mutable_data(), nx, 0.0);
+        } else {
+            x0p = fixed_array(x0, "x0", {nx});
+        }
         check_cost(Qp, Rp, Sp, N, nx, nu);
 
         auto lbup = bound_horizon(lbu, "lbu", N, nu, -kInfinity);
         auto ubup = bound_horizon(ubu, "ubu", N, nu, kInfinity);
         auto lbxp = bound_horizon(lbx, "lbx", N, nx, -kInfinity);
         auto ubxp = bound_horizon(ubx, "ubx", N, nx, kInfinity);
+        auto Zbup = bound_horizon(Zbu, "Zbu", N, nu, kInfinity);
+        auto zbup = bound_horizon(zbu, "zbu", N, nu, 0.0);
+        auto Zbxp = bound_horizon(Zbx, "Zbx", N, nx, kInfinity);
+        auto zbxp = bound_horizon(zbx, "zbx", N, nx, 0.0);
         std::vector<GeneralStage> general = general_horizon(C, N, nx, nu);
         if (C.is_none() && (!c_l.is_none() || !c_u.is_none()))
             throw py::value_error("c_l and c_u require C");
 
         stages_.resize(N + 1);
         for (u32 stage = 0; stage < N; ++stage)
-            process_simple_bounds(stages_[stage], lbup[stage], ubup[stage], true,
+            process_simple_bounds(stages_[stage], lbup[stage], ubup[stage],
+                                  Zbup[stage], zbup[stage], true,
                                   nu, nx, stage, "lbu", "ubu");
         for (u32 horizon_index = 0; horizon_index < N; ++horizon_index) {
             const u32 stage = horizon_index + 1;
             process_simple_bounds(stages_[stage], lbxp[horizon_index], ubxp[horizon_index],
+                                  Zbxp[horizon_index], zbxp[horizon_index],
                                   false, stage < N ? nu : 0, nx, stage,
                                   "lbx", "ubx");
         }
@@ -478,6 +535,10 @@ public:
                 c_l, "c_l", stage, N + 1, source.rows, -kInfinity);
             std::vector<double> upper = general_bound_stage(
                 c_u, "c_u", stage, N + 1, source.rows, kInfinity);
+            std::vector<double> Z = general_bound_stage(
+                Zg, "Zg", stage, N + 1, source.rows, kInfinity);
+            std::vector<double> z = general_bound_stage(
+                zg, "zg", stage, N + 1, source.rows, 0.0);
             for (u32 row = 0; row < source.rows; ++row) {
                 double row_lower = lower[row];
                 double row_upper = upper[row];
@@ -493,6 +554,8 @@ public:
                     row_lower -= shift;
                     row_upper -= shift;
                 }
+                const auto penalty = slack_penalty(Z[row], z[row], "Zg", stage, row,
+                                                   row_lower == row_upper);
                 if (row_lower == row_upper) {
                     const u32 equality_row = static_cast<u32>(stages_[stage].d.size());
                     std::vector<double> zero_x(nx, 0.0);
@@ -516,6 +579,8 @@ public:
                                                  Cx_row, Cx_row + nx);
                     stages_[stage].cl.push_back(row_lower);
                     stages_[stage].cu.push_back(row_upper);
+                    stages_[stage].Zg.push_back(penalty.first);
+                    stages_[stage].zg.push_back(penalty.second);
                     if (stage == 0)
                         stage_zero_shifts_.push_back(
                             {false, inequality_row,
@@ -656,16 +721,22 @@ private:
                 std::copy(source.idxbu.begin(), source.idxbu.end(), qp_.idxbu[stage]);
                 std::copy(source.lbu.begin(), source.lbu.end(), qp_.lbu[stage]);
                 std::copy(source.ubu.begin(), source.ubu.end(), qp_.ubu[stage]);
+                std::copy(source.Zbu.begin(), source.Zbu.end(), qp_.Zbu[stage]);
+                std::copy(source.zbu.begin(), source.zbu.end(), qp_.zbu[stage]);
             }
             if (stage > 0) {
                 std::copy(source.Cx.begin(), source.Cx.end(), qp_.Cx[stage]);
                 std::copy(source.idxbx.begin(), source.idxbx.end(), qp_.idxbx[stage]);
                 std::copy(source.lbx.begin(), source.lbx.end(), qp_.lbx[stage]);
                 std::copy(source.ubx.begin(), source.ubx.end(), qp_.ubx[stage]);
+                std::copy(source.Zbx.begin(), source.Zbx.end(), qp_.Zbx[stage]);
+                std::copy(source.zbx.begin(), source.zbx.end(), qp_.zbx[stage]);
             }
             std::copy(source.Dx.begin(), source.Dx.end(), qp_.Dx[stage]);
             std::copy(source.cl.begin(), source.cl.end(), qp_.cl[stage]);
             std::copy(source.cu.begin(), source.cu.end(), qp_.cu[stage]);
+            std::copy(source.Zg.begin(), source.Zg.end(), qp_.Zg[stage]);
+            std::copy(source.zg.begin(), source.zg.end(), qp_.zg[stage]);
             std::copy(source.d.begin(), source.d.end(), qp_.d[stage]);
         }
     }
@@ -749,14 +820,23 @@ PYBIND11_MODULE(daocp, module) {
         .def(py::init<py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
                       py::object, py::object, py::object, py::object, py::object,
-                      py::object, u32, u32, u32, u32, bool, f64, f64>(),
-             py::arg("A"), py::arg("B"), py::arg("w"), py::arg("Q"),
-             py::arg("R"), py::arg("S"), py::arg("q"), py::arg("r"),
-             py::arg("lbx"), py::arg("ubx"), py::arg("lbu"), py::arg("ubu"),
-             py::arg("C"), py::arg("c_l"), py::arg("c_u"), py::arg("x0"),
-             py::arg("N"), py::arg("nx"), py::arg("nu"), py::arg("max_iter") = 1000,
-             py::arg("greedy") = true, py::arg("pr_tol") = 1e-8,
-             py::arg("du_tol") = 1e-8)
+                      py::object, u32, u32, u32,
+                      py::object, py::object, py::object, py::object,
+                      py::object, py::object, py::object,
+                      py::object, py::object, py::object>(),
+             py::arg("A"), py::arg("B"), py::arg("w") = py::none(),
+             py::arg("Q") = py::none(), py::arg("R"),
+             py::arg("S") = py::none(), py::arg("q") = py::none(), py::arg("r") = py::none(),
+             py::arg("lbx") = py::none(), py::arg("ubx") = py::none(),
+             py::arg("lbu") = py::none(), py::arg("ubu") = py::none(),
+             py::arg("C") = py::none(), py::arg("c_l") = py::none(),
+             py::arg("c_u") = py::none(), py::arg("x0") = py::none(),
+             py::arg("N"), py::arg("nx"), py::arg("nu"), py::arg("max_iter") = py::none(),
+             py::arg("greedy") = py::none(), py::arg("pr_tol") = py::none(),
+             py::arg("du_tol") = py::none(),
+             py::arg("Zbx") = py::none(), py::arg("Zbu") = py::none(),
+             py::arg("Zg") = py::none(), py::arg("zbx") = py::none(),
+             py::arg("zbu") = py::none(), py::arg("zg") = py::none())
         .def_readwrite("setup_time", &OCPsolver::setup_time)
         .def("solve", &OCPsolver::solve)
         .def("update", &OCPsolver::update,
