@@ -34,6 +34,7 @@ void daocp_solve(
             if (daocp_is_step_dual_feasible(wrk, args)) {
                 // If p is dual feasible, xi = p
                 memcpy(wrk->xi, wrk->p, wrk->as.n_active*sizeof(f64));
+                memcpy(wrk->xis, wrk->ps, wrk->as.n_active*sizeof(f64));
                 // Add a primal-violated constraint, if it exists
                 daocp_constraint violated;
                 u32 is_slack = selection_handle(wrk, qp, args, &violated);
@@ -47,6 +48,7 @@ void daocp_solve(
             } else {
                 // Form descent direction
                 for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
+                for (u32 i=0; i<wrk->as.n_active; ++i) wrk->ps[i] -= wrk->xis[i];
                 u32 idx_remove = daocp_take_step(wrk);
                 daocp_remove_from_working_set(wrk, qp, idx_remove);
             }
