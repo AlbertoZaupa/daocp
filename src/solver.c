@@ -48,7 +48,7 @@ void daocp_solve(
                 // Form descent direction
                 for (u32 i=0; i<wrk->as.n_active; ++i) wrk->p[i] -= wrk->xi[i];
                 u32 idx_remove = daocp_take_step(wrk);
-                daocp_remove_from_working_set(wrk, idx_remove);
+                daocp_remove_from_working_set(wrk, qp, idx_remove);
             }
         } else {
             // Retrieve a descent direction by exploiting infeasibility
@@ -67,7 +67,7 @@ void daocp_solve(
                 break;
             }
             u32 idx_remove = daocp_take_step(wrk);
-            daocp_remove_from_working_set(wrk, idx_remove);
+            daocp_remove_from_working_set(wrk, qp, idx_remove);
         }
     }
     if (status_set==0) {

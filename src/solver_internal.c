@@ -597,6 +597,9 @@ void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constrai
         // Remove slack-related linear term
         f64 l = rho_1_inv * get_slack_1norm_penalty(wrk, qp, violated->t, violated->idx, violated->type);
         wrk->dual_linear[xi_idx] += wrk->xi_sign[xi_idx] == 0 ? -l : l;
+
+        // Set constraint status to not softened.
+        daocp_change_softening(wrk, violated->t, violated->idx, violated->type, 0);
         return;
     }
 
@@ -662,6 +665,32 @@ static void update_cholesky_remove(daocp_workspace* wrk, u32 idx) {
     wrk->singular = 0;
 }
 
+static void update_cholesky_regularize(daocp_workspace* wrk, u32 idx, f64 r) {
+    u32 n_active = wrk->as.n_active;
+    u32 W_stride = wrk->W_stride;
+
+    // Use first unused row of Ld as skratch for the update
+    f64* l = wrk->Ld + n_active*W_stride + idx;
+    l[idx] = r;
+
+    // Perform rank1 update of bottom-right lower triangle
+    f64 lii, lii_new, a, b, tmp;
+    for (u32 i=idx; i<n_active; ++i) {
+        lii = 1 / wrk->Ld[i*W_stride+i]; // Before the update L is nonsingular, no problems here
+        lii_new = 1 /  sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx]));
+
+        // Update rank1 term
+        a = l[i-idx] * lii_new;
+        b = lii * lii_new;
+        for (u32 j=i+1; j<n_active; ++j) {
+            lii = l[j-idx];
+            lii_new = wrk->Ld[j*W_stride + i];
+            l[j-idx] = lii * b - lii_new * a;
+            wrk->Ld[j*W_stride + i] = b * lii_new + a * lii;
+        }
+    }
+}
+
 static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     // Retrieve constraint info.
     u32 t = wrk->as.xi2con[xi_idx].t;
@@ -690,7 +719,25 @@ static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     }
 }
 
-void daocp_remove_from_working_set(daocp_workspace* wrk, u32 xi_idx) {
+void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_idx) {
+    u32 is_slack = xi_idx >= wrk->as.n_active;
+    // Check if we are removing a slack sign constraint
+    if (is_slack) {
+        daocp_constraint* constr = wrk->as.xi2con + xi_idx;
+        f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
+        f64 rho1_invsqrt = 1 / sqrt(rho1_inv);
+        // Add regularization term to dual hessian
+        update_cholesky_regularize(wrk, xi_idx, rho1_invsqrt);
+
+        // Add slack-related linear term
+        f64 l = rho1_inv * get_slack_1norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
+        wrk->dual_linear[xi_idx] += wrk->xi_sign[xi_idx] == 0 ? l : -l;
+
+        // Soften constraint
+        daocp_change_softening(wrk, constr->t, constr->idx, constr->type, 1);
+        return;
+    }
+
     // Update cholesky of dH
     update_cholesky_remove(wrk, xi_idx);
 
@@ -758,6 +805,7 @@ u32 daocp_get_xi_idx(daocp_workspace* wrk, daocp_constraint* constr) {
         if (idx != (wrk->as.xi2con+1)->idx) continue;
         return i;
     }
+    return -1;
 }
 
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type) {
