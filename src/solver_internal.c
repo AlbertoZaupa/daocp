@@ -109,7 +109,7 @@ u32 daocp_take_step(daocp_workspace* wrk) {
     f64* ps = wrk->ps;
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
-        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
         f64 tau = - xis[i] / ps[i];
         if (tau < t) {
             t = tau;
@@ -122,7 +122,7 @@ u32 daocp_take_step(daocp_workspace* wrk) {
     // Take step along ps
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
-        if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
+        if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
         xis[i] += t*ps[i];
     }
     return argmin;
@@ -344,7 +344,7 @@ u32 daocp_selection_most_violated(
         f64 rho2 = get_slack_1norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
         f64 s = wrk->xi_sign[i] == 0 ? rho2 + wrk->xi[i] : wrk->xi[i] - rho2;
         s *= rho1_inv;
-        if ((wrk->xi_sign[i] == 0 && s > args->primal_tol) || (wrk->xi_sign[i] == 1 && s < -args->primal_tol)) {
+        if ((wrk->xi_sign[i] == 0 && s > max_violation) || (wrk->xi_sign[i] == 1 && s < -max_violation)) {
             max_violation = wrk->xi_sign[i] == 0 ? s : -s;
             is_slack = 1;
             populate_constraint_struct(violated, constr->t, constr->idx, constr->type, 0);
@@ -546,6 +546,7 @@ static void daocp_update_working_set__add(daocp_workspace* wrk, daocp_constraint
     wrk->as.xi2con[wrk->as.n_active] = new_constraint;
 
     wrk->xi[wrk->as.n_active] = 0.0;
+    wrk->xis[wrk->as.n_active] = 0.0;
     wrk->xi_sign[wrk->as.n_active] = is_upper ? 1 : 0;
     daocp_change_status(wrk, t, idx, type, 1);
     // Constraints are non-softened when they enter the active set
@@ -564,7 +565,7 @@ static void update_cholesky_remove_regularization(daocp_workspace* wrk, u32 idx,
 
     // Use first unused row of Ld as skratch for the update
     f64* l = wrk->Ld + n_active*W_stride + idx;
-    memset(l, 0, (n_active - idx - 1)*sizeof(f64));
+    memset(l, 0, (n_active - idx)*sizeof(f64));
     l[0] = r;
 
     // Perform rank1 downdate of bottom-right lower triangle
@@ -688,13 +689,14 @@ static void update_cholesky_regularize(daocp_workspace* wrk, u32 idx, f64 r) {
 
     // Use first unused row of Ld as skratch for the update
     f64* l = wrk->Ld + n_active*W_stride + idx;
-    memset(l, 0, (n_active-idx-1)*sizeof(f64));
+    memset(l, 0, (n_active-idx)*sizeof(f64));
     l[0] = r;
 
     // Perform rank1 update of bottom-right lower triangle
     f64 lii, lii_new, a, b, tmp;
     for (u32 i=idx; i<n_active; ++i) {
-        lii = 1 / wrk->Ld[i*W_stride+i]; // Before the update L is nonsingular, no problems here
+        lii = wrk->Ld[i*W_stride+i];
+        if (lii > 0.0) lii = 1 / lii;
         lii_new = 1 /  sqrt(DAOCP_PW2(lii) + DAOCP_PW2(l[i-idx]));
         wrk->Ld[i*W_stride + i] = lii_new;
 
@@ -723,6 +725,8 @@ static void daocp_update_working_set__remove(daocp_workspace* wrk, u32 xi_idx) {
     // Compact xi and xi_sign
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi[i-1] = wrk->xi[i];
+    for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
+        wrk->xis[i-1] = wrk->xis[i];
     for (u32 i=xi_idx+1; i < wrk->as.n_active; ++i)
         wrk->xi_sign[i-1] = wrk->xi_sign[i];
     
@@ -796,18 +800,23 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk) {
     for (u32 i=0; i<singular_idx; ++i)
         wrk->p[i] = -wrk->Ld[singular_idx*W_stride + i];
     daocp_trsv_t(wrk->p, wrk->Ld, singular_idx, W_stride);
+    // Compute the direction for slack sign constraints multipliers
+    for (u32 i=0; i<wrk->as.n_active; ++i) wrk->ps[i] = -wrk->p[i];
 
     // Enforce p' d < 0. We only need to consider the contribution
-    // from non-softened constraints.
+    // from non-softened constraints, p[soft] = 0. Moreover, the 
+    // linear term rho_2 / rho_1 cancels out.
     f64 dotv = 0.0;
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         daocp_constraint* constr = wrk->as.xi2con+i;
         if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
-        dotv += wrk->dual_linear[i] * wrk->dual_linear[i];
+        dotv += wrk->p[i] * wrk->dual_linear[i];
     }
     if (dotv >= -DAOCP_ZERO_TOL && dotv <= DAOCP_ZERO_TOL) return 1;
-    if (dotv > DAOCP_ZERO_TOL)
+    if (dotv > DAOCP_ZERO_TOL) {
         daocp_negate(wrk->p, n_active);
+        daocp_negate(wrk->ps, n_active);
+    }
     return 0;
 }
 
@@ -931,11 +940,11 @@ u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     u32 nu_cols = wrk->cnu[wrk->as.max_t] + wrk->dims->nu[wrk->as.max_t];
     u32 eta_cols = wrk->crho[wrk->as.max_t] + wrk->rho[wrk->as.max_t];
     for (u32 i=0; i<n_active; ++i)
-        for (u32 j=i; j<n_active; ++j) {
+        for (u32 j=0; j<=i; ++j) {
             wrk->Ld[i*W_stride+j] += daocp_dot(wrk->Mu+i*wrk->nu_tot, wrk->Mu+j*wrk->nu_tot, nu_cols);
         }
     for (u32 i=0; i<n_active; ++i)
-        for (u32 j=i; j<n_active; ++j) {
+        for (u32 j=0; j<=i; ++j) {
             wrk->Ld[i*W_stride+j] -= daocp_dot(wrk->Me+i*wrk->neta, wrk->Me+j*wrk->neta, eta_cols);
         }
 
