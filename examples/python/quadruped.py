@@ -85,8 +85,6 @@ def solve_ocp():
         c_u,    # cu[k] upper bounds for mixed constraints
         dx0,    # intial state (set to zero if unknown at setup)
         N,      # horizon length
-        nx,     # number of states
-        nu,     # number of controls
         greedy=True    # constraint selection strategy. Greedy=True good for simple prob.
     )
 
@@ -106,10 +104,8 @@ def time_ocp():
     total = 0
     nreps = 200
     for i in range(nreps):
-        solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, None, None, lbu, ubu,
-                        C, c_l, c_u,
-                        dx0, N, nx, nu)
+        solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbu=lbu, ubu=ubu,
+                            C=C, c_l=c_l, c_u=c_u, x0=dx0, N=N)
         res = solver.solve()
         total += res.info.solve_time    
     print(f"Average solve time: {(total/nreps):3f} us.")
@@ -118,10 +114,8 @@ def solve_mpc():
     """
     Receding horizon MPC controller
     """
-    solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, None, None, lbu, ubu,
-                        C, c_l, c_u,
-                        dx0, N, nx, nu)
+    solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbu=lbu, ubu=ubu,
+                        C=C, c_l=c_l, c_u=c_u, N=N)
     for t in range(300):
         # Fetch state from fixed sequence
         x = dX[t*nx:(t+1)*nx]
@@ -134,4 +128,4 @@ def solve_mpc():
         print()
 
 if __name__ == '__main__':
-    time_ocp()
+    solve_ocp()

@@ -59,8 +59,6 @@ def solve_ocp():
         None,   # cu[k] upper bounds for mixed constraints
         dx0,    # intial state (set to zero if unknown at setup)
         N,      # horizon length
-        nx,     # number of states
-        nu,     # number of controls
         greedy=False    # constraint selection strategy. Greedy=True good for simple prob.
     )
 
@@ -80,10 +78,8 @@ def time_ocp():
     total = 0
     nreps = 200
     for i in range(nreps):
-        solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, None, None, lbu, ubu,
-                        None, None, None,
-                        dx0, N, nx, nu, greedy=True)
+        solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbu=lbu, ubu=ubu, 
+                           x0=dx0, N=N, greedy=True)
         res = solver.solve()
         total += res.info.solve_time
     print(f"Average solve time: {(total/nreps):3f} us")
@@ -98,10 +94,8 @@ def solve_mpc():
 
     for run in range(nruns):
         # Instantiate solver
-        solver = OCPsolver(A, B, None, Ql, R, None,
-                        None, None, None, None, lbu, ubu,
-                        None, None, None,
-                        dx0, N, nx, nu, greedy=False)
+        solver = OCPsolver(A=A, B=B, Q=Ql, R=R, lbu=lbu, ubu=ubu, 
+                           x0=dx0, N=N, greedy=False)
         x = dx0.copy()
         for t in range(nsteps):
             res = solver.solve()
@@ -121,4 +115,4 @@ def solve_mpc():
     print(f"Maximum solve time: {np.max(timing):.4f} us.")
 
 if __name__ == '__main__':
-    solve_mpc()
+    solve_ocp()
