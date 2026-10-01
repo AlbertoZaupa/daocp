@@ -117,8 +117,8 @@ u32 daocp_take_step(daocp_workspace* wrk) {
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
-        if ((xi_sign[i] == 0 && ps[i] > DAOCP_ZERO_TOL) || 
-            (xi_sign[i] == 1 && ps[i] < -DAOCP_ZERO_TOL)) continue;
+        if ((xi_sign[i] == 0 && ps[i] > -DAOCP_ZERO_TOL) || 
+            (xi_sign[i] == 1 && ps[i] < DAOCP_ZERO_TOL)) continue;
         f64 tau = - xis[i] / ps[i];
         if (tau < t) {
             t = tau;
