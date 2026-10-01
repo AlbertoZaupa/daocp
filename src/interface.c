@@ -47,7 +47,7 @@ static void daocp_get_totals(
 
 void daocp_args_set_default(daocp_args* args) {
     args->max_iter = 1000;
-    args->selection = DAOCP_SELECT_GREEDY;
+    args->selection = DAOCP_SELECT_MOST_VIOLATED;
     args->primal_tol = 1e-8;
     args->dual_tol = 1e-8;
 }
