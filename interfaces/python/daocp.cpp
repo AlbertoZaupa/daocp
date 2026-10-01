@@ -275,20 +275,10 @@ struct StageData {
 
 // Python accepts Z itself; the native solver stores its inverse.
 std::pair<double, double> slack_penalty(double Z, double z, const char* name,
-                                       u32 stage, u32 row, bool equality) {
+                                       u32 stage, u32 row) {
     const std::string location = stage_name(name, stage) + " row " + std::to_string(row);
     if (!(Z > 0.0))
         throw py::value_error(location + " must be positive or np.inf");
-    if (equality) {
-        if (std::isfinite(Z)) {
-            const std::string message = location +
-                ": DAOCP does not support softening of equality constraints at the moment; "
-                "ignoring the slack penalties for this equality";
-            if (PyErr_WarnEx(PyExc_UserWarning, message.c_str(), 1) < 0)
-                throw py::error_already_set();
-        }
-        return {0.0, 0.0};
-    }
     // Ignore the linear penalty for hard constraints, including its value validation.
     if (Z == kInfinity) return {0.0, 0.0};
     if (!std::isfinite(z) || z < 0.0)
@@ -333,8 +323,9 @@ void process_simple_bounds(StageData& stage,
         check_bound_pair(lb, ub, lower_name, upper_name, solver_stage, index);
         if (trivial_pair(lb, ub)) continue;
         const auto penalty = slack_penalty(Z[index], z[index], input ? "Zbu" : "Zbx",
-                                           solver_stage, index, lb == ub);
-        if (lb == ub) {
+                                           solver_stage, index);
+        // Equal bounds remain inequalities when their slack penalty is finite.
+        if (lb == ub && Z[index] == kInfinity) {
             append_unit_equality(stage, nu, nx, input, index, lb);
         } else if (input) {
             stage.idxbu.push_back(index);
@@ -579,9 +570,8 @@ public:
                     row_lower -= shift;
                     row_upper -= shift;
                 }
-                const auto penalty = slack_penalty(Z[row], z[row], "Zg", stage, row,
-                                                   row_lower == row_upper);
-                if (row_lower == row_upper) {
+                const auto penalty = slack_penalty(Z[row], z[row], "Zg", stage, row);
+                if (row_lower == row_upper && Z[row] == kInfinity) {
                     const u32 equality_row = static_cast<u32>(stages_[stage].d.size());
                     std::vector<double> zero_x(nx, 0.0);
                     append_equality(stages_[stage], Cu_row, stage_nu,
