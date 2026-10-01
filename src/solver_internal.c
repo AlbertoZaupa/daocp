@@ -37,7 +37,9 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp) {
     memcpy(wrk->p, wrk->dual_intermediate, n_active*sizeof(f64));
     daocp_trsv_t(wrk->p, wrk->Ld, n_active, wrk->W_stride);
 
-    // Get slack-related dual term
+    // Get virtual slacks. 
+    // if constraint active at LOWER bound: s = (rho_2 + xi) / rho_1
+    // if constraint active at UPPER bound: s = (xi - rho_2) / rho_1
     for (u32 i=0; i<n_active; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         u32 t = constr->t;
@@ -47,7 +49,7 @@ void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp) {
             f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, t, idx, type);
             f64 rho2 = get_slack_1norm_penalty(wrk, qp, t, idx, type);
             f64 tmp = get_slack_1norm_penalty(wrk, qp, t, idx, type) - wrk->p[i];
-            wrk->ps[i] = wrk->xi_sign[i] == 0 ? -rho2-wrk->p[i] : rho2-wrk->p[i];
+            wrk->ps[i] = wrk->xi_sign[i] == 0 ? rho2+wrk->p[i] : wrk->p[i]-rho2;
             wrk->ps[i] *= rho1_inv;
         }
     }
@@ -66,13 +68,18 @@ u32 daocp_is_step_dual_feasible(daocp_workspace* wrk, daocp_args* args) {
     }
 
     /*
-        Check that slack duals are feasible
+        Check that virtual slacks have infeasible signs
     */
+    // The slack constraint s == 0 is dual feasible if:
+    // - the corresponding actual constraint is active at the LOWER bound
+    //   and the virtual slack is POSITIVE.
+    // - the corresponding actual cosntraint is active at the UPPER bound
+    //   and the virtual slack is NEGATIVE.
     f64* ps = wrk->ps;
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type) && 
-            ((sign[i] == 0 && ps[i] > args->dual_tol) || (sign[i] == 1 && ps[i] < -args->dual_tol)))
+            ((sign[i] == 0 && ps[i] < -args->dual_tol) || (sign[i] == 1 && ps[i] > args->dual_tol)))
             return 0;
     }
     return 1;
@@ -110,8 +117,8 @@ u32 daocp_take_step(daocp_workspace* wrk) {
     for (u32 i=0; i<n; ++i) {
         daocp_constraint* constr = wrk->as.xi2con + i;
         if (daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
-        if ((xi_sign[i] == 0 && ps[i] <DAOCP_ZERO_TOL) || 
-            (xi_sign[i] == 1 && ps[i] > -DAOCP_ZERO_TOL)) continue;
+        if ((xi_sign[i] == 0 && ps[i] > DAOCP_ZERO_TOL) || 
+            (xi_sign[i] == 1 && ps[i] < -DAOCP_ZERO_TOL)) continue;
         f64 tau = - xis[i] / ps[i];
         if (tau < t) {
             t = tau;
@@ -219,6 +226,8 @@ u32 daocp_selection_greedy(
         if (!daocp_is_softened(wrk, constr->t, constr->idx, constr->type)) continue;
         f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
         f64 rho2 = get_slack_1norm_penalty(wrk, qp, constr->t, constr->idx, constr->type);
+        // if constraint active at lower bound, s = (rho_2 + xi) / rho_1
+        // if constraint active at upper bound, s = (xi - rho_2) / rho_1
         f64 s = wrk->xi_sign[i] == 0 ? rho2 + wrk->xi[i] : wrk->xi[i] - rho2;
         s *= rho1_inv;
         if ((wrk->xi_sign[i] == 0 && s > args->primal_tol) ||
@@ -807,7 +816,9 @@ u32 daocp_get_descent_dir(daocp_workspace* wrk, daocp_qp* qp) {
         daocp_constraint* c = wrk->as.xi2con+i;
         if (daocp_is_softened(wrk, c->t, c->idx, c->type)) continue;
         f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, c->t, c->idx, c->type);
-        wrk->ps[i] = -wrk->p[i]*rho1_inv;
+        
+        // virtual slack is (p +- 0) / rho1.
+        wrk->ps[i] = wrk->p[i]*rho1_inv;
     }
 
     // Enforce p' d < 0. We only need to consider the contribution
@@ -845,7 +856,10 @@ u32 daocp_check_infeasibility_from_descent_dir(daocp_workspace* wrk) {
         daocp_constraint* c = wrk->as.xi2con+i;
         if (daocp_is_softened(wrk, c->t, c->idx, c->type)) continue;
         
-        if ((sign[i] == 1 && ps[i] < -DAOCP_ZERO_TOL) || (sign[i] == 0 && ps[i] > DAOCP_ZERO_TOL)) return 0;
+        // Slack direction should be negative if constraint active at lower bound,
+        // and positive otherwise.
+        // (Moving enough along the given direction should make the virtual slacks feasible)
+        if ((sign[i] == 1 && ps[i] > DAOCP_ZERO_TOL) || (sign[i] == 0 && ps[i] < -DAOCP_ZERO_TOL)) return 0;
     }
 
     return 1; 
