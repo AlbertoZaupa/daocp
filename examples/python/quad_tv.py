@@ -64,9 +64,7 @@ def solve_mpc():
         None,   # cl[k] mixed constraints lower bounds. 
         None,   # cu[k] mixed constraints upper bounds.
         x0,     # initial state. (Can be updated, so arbitrary)
-        N,      # horizon lenght
-        nx,     # state dimension
-        nu,     # input dimension
+        N,      # horizon length
         greedy=True    # constraint selection strategy. Greedy=True great for simple probs.
     )
 

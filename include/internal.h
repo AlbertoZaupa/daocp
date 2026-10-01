@@ -29,6 +29,7 @@ typedef struct {
     u32 idx;
     daocp_constraint_type type;
     u32 is_upper;
+    u32 is_soft;
 } daocp_constraint;
 
 typedef struct {
@@ -76,7 +77,9 @@ typedef struct {
     u32 neta;
 
     f64* xi;
+    f64* xis;
     f64* p;
+    f64* ps;
     f64* dual_linear;
     f64* dual_intermediate;
     f64* Ld;
@@ -86,6 +89,7 @@ typedef struct {
     u32 W_stride;
     u32 nH0;
     u32 singular;
+    u32 singular_idx;
 
     f64* H;
     f64* h;
@@ -99,19 +103,23 @@ typedef struct {
 
 // Solver logic
 u32 daocp_check_x0_feasibility(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args);
-void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk);
-u32 daocp_is_dual_feasible(daocp_args* args, f64* p, u32* sign, u32 n);
-u32 daocp_take_step(f64* xi, u32* xi_sign, f64*p, u32 n);
-void daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
-void daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
-void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated);
-void daocp_remove_from_working_set(daocp_workspace* wrk, u32 xi_idx);
-u32 daocp_get_descent_dir(daocp_workspace* wrk);
-u32 daocp_check_infeasibility_from_descent_dir(f64* p, u32* sign, u32 n);
+void daocp_solve_dual_eqcon_qp(daocp_workspace* wrk, daocp_qp* qp);
+u32 daocp_is_step_dual_feasible(daocp_workspace* wrk, daocp_args* args);
+u32 daocp_take_step(daocp_workspace* wrk);
+u32 daocp_selection_greedy(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
+u32 daocp_selection_most_violated(daocp_workspace* wrk, daocp_qp* qp, daocp_args* args, daocp_constraint* violated);
+void daocp_add_to_working_set(daocp_workspace* wrk, daocp_qp* qp, daocp_constraint* violated, u32 is_slack);
+void daocp_remove_from_working_set(daocp_workspace* wrk, daocp_qp* qp, u32 xi_idx);
+u32 daocp_get_descent_dir(daocp_workspace* wrk, daocp_qp* qp);
+u32 daocp_check_infeasibility_from_descent_dir(daocp_workspace* wrk);
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol);
 u32 daocp_constraint_idx(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_get_xi_idx(daocp_workspace* wrk, daocp_constraint* constr);
 u32 daocp_is_active(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_is_soft(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
+u32 daocp_is_softened(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type);
 void daocp_change_status(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 status);
+void daocp_change_softening(daocp_workspace* wrk, u32 t, u32 idx, daocp_constraint_type type, u32 soft_status);
 
 // Solver update logic
 u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp);

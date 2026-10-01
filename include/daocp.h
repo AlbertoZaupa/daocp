@@ -29,6 +29,12 @@ typedef struct {
     f64* x0;
     struct blasfeo_dmat* BAwt;
     struct blasfeo_dmat* RSQrq;
+    f64** Zbx;
+    f64** Zbu;
+    f64** Zg;
+    f64** zbx;
+    f64** zbu;
+    f64** zg;
     f64** Cx;
     f64** Cu;
     f64** Dx;
