@@ -946,6 +946,35 @@ void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
     blasfeo_daxpy(wrk->dims->nx[wrk->dims->N], 1.0, &v, 0, wrk->ux_lqr+wrk->dims->N, 0, sol->ux+wrk->dims->N, 0);
 }
 
+// Compute the dual linear term from the problem data
+// d = b - G * z_lqr
+void daocp_compute_dual_linear_term(daocp_workspace* wrk, daocp_qp* qp) {
+    u32 n_active = wrk->as.n_active;
+    for (u32 i=0; i<n_active; ++i) {
+        daocp_constraint* c = wrk->as.xi2con + i;
+        f64* ptr;
+        switch (c->type) {
+        case DAOCP_BOUND_U:
+            ptr = (c->is_upper ? wrk->ubu_wrk : wrk->lbu_wrk)[c->t];
+            break;
+        case DAOCP_BOUND_X:
+            ptr = (c->is_upper ? wrk->ubx_wrk : wrk->lbx_wrk)[c->t];
+            break;
+        default:
+            ptr = (c->is_upper ? wrk->ug_wrk : wrk->lg_wrk)[c->t];
+        }
+        wrk->dual_linear[i] = ptr[c->idx];
+        
+        // Add softening contribution
+        if (daocp_is_softened(wrk, c->t, c->idx, c->type)) {
+            f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, c->t, c->idx, c->type);
+            f64 rho2 = get_slack_1norm_penalty(wrk, qp, c->t, c->idx, c->type);
+            if (c->is_upper) wrk->dual_linear[i] -= rho2 * rho1_inv;
+            else wrk->dual_linear[i] += rho2 * rho1_inv;
+        }
+    }
+}
+
 u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp) {
     u32 n_active = wrk->as.n_active;
     u32 W_stride = wrk->W_stride;
@@ -1039,27 +1068,7 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
 
     // Solve LQR
     daocp_solve_lqr(wrk, qp);
-    for (u32 i=0; i<wrk->as.n_active; ++i) {
-        daocp_constraint* c = wrk->as.xi2con + i;
-        f64* p;
-        switch (c->type) {
-            case DAOCP_BOUND_U:
-                p = (c->is_upper ? wrk->ubu_wrk : wrk->lbu_wrk)[c->t];
-                break;
-            case DAOCP_BOUND_X:
-                p = (c->is_upper ? wrk->ubx_wrk : wrk->lbx_wrk)[c->t];
-                break;
-            default:
-                p = (c->is_upper ? wrk->ug_wrk : wrk->lg_wrk)[c->t];
-                break;
-        }
-        wrk->dual_linear[i] = p[c->idx];
-        if (daocp_is_softened(wrk, c->t, c->idx, c->type)) {
-            f64 rho1_inv = get_slack_2norm_penalty(wrk, qp, c->t, c->idx, c->type);
-            f64 rho2 = get_slack_1norm_penalty(wrk, qp, c->t, c->idx, c->type);
-            wrk->dual_linear[i] += rho1_inv * (wrk->xi_sign[i] == 0 ? rho2 : -rho2);
-        }
-    }
+    daocp_compute_dual_linear_term(wrk, qp);
     wrk->as.n_valid_intermediate = 0;
 }
 
