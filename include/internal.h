@@ -123,6 +123,7 @@ void daocp_change_softening(daocp_workspace* wrk, u32 t, u32 idx, daocp_constrai
 
 // Solver update logic
 u32 daocp_compute_chol_from_scratch(daocp_workspace* wrk, daocp_qp* qp);
+void daocp_compute_dual_linear_term(daocp_workspace* wrk, daocp_qp* qp);
 void daocp_reset_working_set(daocp_workspace* wrk);
 void daocp_update(daocp_workspace* wrk, daocp_qp* qp, 
     f64* x0, struct blasfeo_dvec* rq, f64** lbx, 
