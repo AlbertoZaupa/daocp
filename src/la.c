@@ -458,16 +458,21 @@ u32 daocp_gaussian_elimination(f64* A, f64* J, f64* tmp, u32 nr, u32 nc, u32 nct
 }
 
 void daocp_GE_transpose(f64* J, f64* mu, u32 m, u32 rho) {
-    for (u32 i=0; i<rho; ++i) {
-        u32 k = *((u32*)J); // Retrieve swap index from diagonal elements of J
+    // We start from the end of J (pivots are visited in reversed order)
+    J += (rho*(2*m + 1 - rho)) >> 1;
+
+    for (i32 i=rho-1; i>=0; --i) {
+        // Position at the beginning of the row.
+        J -= m - i;
+        // Transpose elimination
+        mu[i] -= daocp_dot(J+1, mu+i+1, m-i-1);
+
+        // Retrieve swap index from diagonal elements of J
+        u32 k = *((u32*)J); 
         // Swap i-k components of mu
         f64 tmp = mu[k];
         mu[k] = mu[i];
         mu[i] = tmp;
-        // Transpose elimination
-        mu[i] -= daocp_dot(J+1, mu+i+1, m-i-1);
-        // Advance J pointer
-        J += m-i;
     }
 }
 

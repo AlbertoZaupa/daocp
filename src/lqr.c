@@ -241,15 +241,15 @@ void daocp_reconstruct_eqcon_dual(daocp_workspace* wrk, daocp_sol* sol) {
         // Transform mu
         daocp_GE_transpose(J[t], mu, m[t], rho[t]);
         // Write first ne[t] components in the solution
-        memcpy(sol->eta + wrk->crho[t], mu, ne[t]*sizeof(f64));
+        memcpy(sol->eta[t], mu, ne[t]*sizeof(f64));
         // Forward remaining m[t]-ne[t] components
         if (t<N-1) {
             if (rho[t+1] > ne[t]) {
-                for (u32 i=m[t]-1; i>=ne[t]; --i) mu[rho[t+1]+i-ne[t]] = mu[i];
+                for (i32 i=m[t]-1; i>=(i32)ne[t]; --i) mu[rho[t+1]+i-ne[t]] = mu[i];
             } else if (rho[t+1] < ne[t]) {
                 for (u32 i=ne[t]; i<m[t]; ++i) mu[rho[t+1]+i-ne[t]] = mu[i];
             }
         }
     }
-    memcpy(sol->eta + wrk->crho[N-1]+rho[N-1], mu + ne[N-1], m[N]*sizeof(f64));
+    memcpy(sol->eta[N], mu + ne[N-1], ne[N]*sizeof(f64));
 }
