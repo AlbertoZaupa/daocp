@@ -134,6 +134,7 @@ void daocp_update(daocp_workspace* wrk, daocp_qp* qp,
 // Riccati and lqr routines
 void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp);
 void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp);
+void daocp_reconstruct_eqcon_dual(daocp_workspace* wrk, daocp_sol* sol);
 
 // Linear algebra and various utils
 #define DAOCP_TRSVLQR(vu, ve, Luu, Lue, Lee, nu, rho) { \

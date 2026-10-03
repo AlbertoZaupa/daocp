@@ -257,6 +257,18 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
     size += 6 * W_stride * sizeof(f64); // xi, xis, p, ps, dual_linear, dual_intermediate
     size += (W_stride + 1) * W_stride * sizeof(f64); // Ld
     size += W_stride * (nu_tot + max_eta) * sizeof(f64); // Mu, Me
+    size += max_eta * ne_tot * sizeof(f64); // J data
+    /*
+        This upper bound on the size of the J data is very loose.
+        The minimum upper bound, as a function of ne[:] and nu[:]
+        can be characterized as the solution of the QP:
+        maximize_{z[t]} \sum_{t=0}^{N-1} z[t] * (ne[t] + \sum_{k=t+1}^N (ne[k]-z[k]))
+        subject to: 0 <= z[t] <= nu[t], z[t] <= ne[t] + \sum_{k=t+1}^N (ne[k]-z[k])
+        with rho[N] = 0. The variables z represent the worst possible allocation
+        of ranks at the various stages.
+        It would be good to compute a more meaningful upper bound, that for example
+        is tight on problems where D_t^u is already full-row rank at every stage. 
+    */
     size += ne_tot * max_nx * sizeof(f64); // H
     size += 2 * ne_tot * sizeof(f64); // h, tmp1
     size += (ne_tot + 1) * (max_nx + max_nu + 1) * sizeof(f64); // GEtmp
@@ -264,7 +276,8 @@ u32 daocp_workspace_memsize(daocp_dims* dims) {
 
     size += ng_tot * sizeof(daocp_constraint_type);
     size += 2 * nin * sizeof(u32); // active constraint status
-    size += 3 * N * sizeof(u32); // cnu, rho, crho
+    size += 4 * N * sizeof(u32); // cnu, rho, crho, m
+    size += N * sizeof(f64*); // J
     size += W_stride * sizeof(u32); // xi_sign
     size += W_stride * sizeof(daocp_constraint); // xi2con
 
@@ -545,10 +558,17 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
 u32 daocp_sol_memsize(daocp_dims* dims)
 {
     u32 N = dims->N;
+    // primal solution
     size_t size = (size_t) (N + 1) * sizeof(struct blasfeo_dvec);
     size += DAOCP_MEMORY_ALIGNMENT - 1;
     for (u32 t = 0; t <= N; ++t)
         size += blasfeo_memsize_dvec(dims->nu[t] + dims->nx[t]);
+
+    // Dual solution
+    size += 2*(N+1)*sizeof(f64*);
+    u32 nctot = 0;
+    for (u32 t=0; t<=N; ++t) nctot += dims->nbu[t] + dims->nbx[t] + dims->ng[t] + dims->ne[t];
+    size += nctot*sizeof(f64);
 
     return (u32) size;
 }
@@ -558,6 +578,7 @@ void daocp_sol_memory_assign(daocp_dims* dims, daocp_sol* sol, void* memory)
     u32 N = dims->N;
     char* c_ptr = (char*) memory;
 
+    // Primal solution
     sol->ux = (struct blasfeo_dvec*) c_ptr;
     c_ptr += (N + 1) * sizeof(struct blasfeo_dvec);
     c_ptr = daocp_align_memory(c_ptr);
@@ -567,6 +588,11 @@ void daocp_sol_memory_assign(daocp_dims* dims, daocp_sol* sol, void* memory)
         blasfeo_create_dvec(nv, sol->ux + t, c_ptr);
         c_ptr += blasfeo_memsize_dvec(nv);
     }
+
+    // Dual solution
+    sol->eta = (f64**) c_ptr; c_ptr += (N+1)*sizeof(f64*);
+    sol->lam = (f64**) c_ptr; c_ptr += (N+1)*sizeof(f64*);
+    sol->lam[0] = (f64*) c_ptr; // At allocation time, lam[0] is the only initialized data pointer
 }
 
 void daocp_update_problem(

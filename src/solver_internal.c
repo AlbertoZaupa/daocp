@@ -931,19 +931,42 @@ void daocp_change_softening(daocp_workspace* wrk, u32 t, u32 idx, daocp_constrai
 }
 
 void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
+    daocp_dims* dims = wrk->dims;
+
+    // Retrieve primal solution
     struct blasfeo_dvec v;
     v.pa = wrk->u[0];
-    blasfeo_daxpy(wrk->dims->nu[0], 1.0, &v, 0, wrk->ux_lqr, 0, sol->ux, 0);
-    blasfeo_dveccp(wrk->dims->nx[0], wrk->ux_lqr, wrk->dims->nu[0], sol->ux, wrk->dims->nu[0]);
+    blasfeo_daxpy(dims->nu[0], 1.0, &v, 0, wrk->ux_lqr, 0, sol->ux, 0);
+    blasfeo_dveccp(dims->nx[0], wrk->ux_lqr, dims->nu[0], sol->ux, dims->nu[0]);
     
-    for (u32 t=1; t<wrk->dims->N; ++t) {
+    for (u32 t=1; t<dims->N; ++t) {
         v.pa = wrk->u[t];
-        blasfeo_daxpy(wrk->dims->nu[t], 1.0, &v, 0, wrk->ux_lqr+t, 0, sol->ux+t, 0);
+        blasfeo_daxpy(dims->nu[t], 1.0, &v, 0, wrk->ux_lqr+t, 0, sol->ux+t, 0);
         v.pa = wrk->x[t];
-        blasfeo_daxpy(wrk->dims->nx[t], 1.0, &v, 0, wrk->ux_lqr+t, wrk->dims->nu[t], sol->ux+t, wrk->dims->nu[t]);
+        blasfeo_daxpy(dims->nx[t], 1.0, &v, 0, wrk->ux_lqr+t, dims->nu[t], sol->ux+t, dims->nu[t]);
     }
-    v.pa = wrk->x[wrk->dims->N];
-    blasfeo_daxpy(wrk->dims->nx[wrk->dims->N], 1.0, &v, 0, wrk->ux_lqr+wrk->dims->N, 0, sol->ux+wrk->dims->N, 0);
+    v.pa = wrk->x[dims->N];
+    blasfeo_daxpy(dims->nx[dims->N], 1.0, &v, 0, wrk->ux_lqr+dims->N, 0, sol->ux+dims->N, 0);
+
+    // Retrieve dual solution. sol->eta and sol->lam pointers are either un-initialized,
+    // or the following assignments remain valid.
+    u32 nc_tot = 0; 
+    for (u32 t=0; t<=dims->N; ++t) nc_tot += dims->nbu[t] + dims->nbx[t] + dims->ng[t] + dims->ne[t];
+    // Set dual solution to 0
+    memset(sol->lam[0], 0, nc_tot*sizeof(f64));
+    // Initialize pointers
+    sol->eta[0] = sol->lam[0] + dims->ng[0] + dims->nbu[0] + dims->nbx[0];
+    for (u32 t=1; t<=dims->N; ++t) {
+        sol->lam[t] = sol->eta[t-1] + dims->ne[t-1];
+        sol->eta[t] = sol->lam[t] + dims->ng[t] + dims->nbu[t] + dims->nbx[t];
+    }
+    // Retrieve inequality multipliers.
+    for (u32 i=0; i<wrk->as.n_active; ++i) {
+        daocp_constraint* c = wrk->as.xi2con + i;
+        sol->lam[c->t][c->idx] = wrk->xi[i];
+    }
+    // Retrieve equality multipliers.
+    daocp_reconstruct_eqcon_dual(wrk, sol);
 }
 
 // Compute the dual linear term from the problem data
