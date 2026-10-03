@@ -11,11 +11,13 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
     u32* nx = qp->dims.nx;
     u32* nu = qp->dims.nu;
     u32* ne = qp->dims.ne;
+    u32* m = wrk->m;
     struct blasfeo_dmat* tmp1 = &wrk->tmp2;
     f64* GEtmp = wrk->GEtmp;
     f64* ABtmp = wrk->ABtmp;
     f64* H = wrk->H; f64* h = wrk->h;
     f64** Dx = qp->Dx; f64** Du = qp->Du;
+    f64** J = wrk->J; f64* Jmem = J[N-1];
 
     // Initialize recursion
     blasfeo_dgecp(nx[N], nx[N], qp->RSQrq+N, 0, 0, wrk->P+N-1, 0, 0);
@@ -37,6 +39,7 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
             Gaussian elimination to propagate constraints
         */
         
+        m[t] = ne[t] + neq_x0;
         // Form [Du; HB | Dx; HA | d; h-Hw]
         memset(GEtmp, 0, (nx[t]+nu[t]+1)*(ne[t]+neq_x0)*sizeof(f64));
         for (u32 i=0; i<ne[t]; ++i) memcpy(GEtmp+i*(nx[t]+nu[t]+1), Du[t]+i*nu[t], nu[t]*sizeof(f64));
@@ -53,7 +56,9 @@ void daocp_solve_riccati(daocp_workspace* wrk, daocp_qp* qp) {
             GEtmp[(ne[t]+i)*(nx[t]+nu[t]+1)+nx[t]+nu[t]] -= daocp_dot(H+i*nx[t+1], ABtmp, nx[t+1]);
 
         // Gaussian elimination
-        u32 rho = wrk->rho[t] = daocp_gaussian_elimination(GEtmp, GEtmp + (ne[t]+neq_x0)*(nx[t]+nu[t]+1), ne[t]+neq_x0, nu[t], nx[t]+nu[t]+1, nu[t]);
+        u32 rho = wrk->rho[t] = daocp_gaussian_elimination(GEtmp, J[t], GEtmp + (ne[t]+neq_x0)*(nx[t]+nu[t]+1), ne[t]+neq_x0, nu[t], nx[t]+nu[t]+1, nu[t]);
+        Jmem += (rho*(2*m[t]+1-rho)) >> 1;
+        if (t>0) J[t-1] = Jmem;
         // Copy new H, h.
         for (u32 i=rho; i<ne[t]+neq_x0; ++i) {
             memcpy(wrk->H + (i-rho)*nx[t], GEtmp + i*(nx[t]+nu[t]+1) + nu[t], nx[t]*sizeof(f64));
@@ -205,4 +210,46 @@ void daocp_solve_lqr(daocp_workspace* wrk, daocp_qp* qp) {
             wrk->ug_wrk[t][i] = qp->cu[t][i] - val;
         }
     }
+}
+
+void daocp_reconstruct_eqcon_dual(daocp_workspace* wrk, daocp_sol* sol) {
+    /*
+    The following algorithm reconstructs the dual solution for the original
+    equality constraints.
+    - Initialize mu = [eta[0]; 0], m[0]-vector.
+    - Transform mu through transpose of rank-revealing J[0]: mu = J[0]' mu.
+    - Output eta_sol[0] = mu[:ne[0]]. 
+    - Set mu = [eta[1]; mu[ne[0]:]].
+    - Iterate until stage N, where eta_sol[N] = mu[ne[N-1]:]. 
+    */
+    u32* ne = wrk->dims->ne;
+    f64** eta = wrk->eta;
+    struct blasfeo_dvec* eta_lqr = wrk->eta_lqr;
+    f64* mu = wrk->GEtmp;
+    u32 N = wrk->dims->N;
+    f64** J = wrk->J;
+    u32* m = wrk->m;
+    u32* rho = wrk->rho;
+
+    // Initialize mu
+    memset(mu, 0, m[0]*sizeof(f64));
+    
+    for (u32 t=0; t<N; ++t) {
+        // Copy eta + eta_lqr in mu
+        for (u32 i=0; i<rho[t]; ++i)
+            mu[i] = eta[t][i] + BLASFEO_DVECEL(eta_lqr+t, i);
+        // Transform mu
+        daocp_GE_transpose(J[t], mu, m[t], rho[t]);
+        // Write first ne[t] components in the solution
+        memcpy(sol->eta + wrk->crho[t], mu, ne[t]*sizeof(f64));
+        // Forward remaining m[t]-ne[t] components
+        if (t<N-1) {
+            if (rho[t+1] > ne[t]) {
+                for (u32 i=m[t]-1; i>=ne[t]; --i) mu[rho[t+1]+i-ne[t]] = mu[i];
+            } else if (rho[t+1] < ne[t]) {
+                for (u32 i=ne[t]; i<m[t]; ++i) mu[rho[t+1]+i-ne[t]] = mu[i];
+            }
+        }
+    }
+    memcpy(sol->eta + wrk->crho[N-1]+rho[N-1], mu + ne[N-1], m[N]*sizeof(f64));
 }

@@ -419,7 +419,7 @@ void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride)
         }
 }
 
-u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R) {
+u32 daocp_gaussian_elimination(f64* A, f64* J, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R) {
     u32 rho = 0;
     for (u32 i=0; i<nc; ++i) {
         if (rho == R) break;
@@ -432,6 +432,9 @@ u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 
                 p = A[j*nctot+i];
             }
         if (pi==rho-1) continue;
+        
+        // Store swap index
+        *((u32*) J) = pi;
 
         // Swap rows pi and rho
         if (rho != pi) {
@@ -440,16 +443,32 @@ u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 
             memcpy(A+pi*nctot, tmp, nctot*sizeof(f64));
         }
 
-        // Perform elimination step
+        // Perform elimination step, while saving elimination coefficients
         for (u32 j=rho+1; j<nr; ++j) {
             f64 alpha = A[j*nctot + i] / p;
+            J[j-rho] = alpha;
             for (u32 k=i; k<nctot; ++k) A[j*nctot + k] -= alpha * A[rho*nctot + k];
         }
         
-        // Increase rank
+        // Advance J pointer and increase rank
+        J += nr - rho;
         rho += 1;
     }
     return rho;
+}
+
+void daocp_GE_transpose(f64* J, f64* mu, u32 m, u32 rho) {
+    for (u32 i=0; i<rho; ++i) {
+        u32 k = *((u32*)J); // Retrieve swap index from diagonal elements of J
+        // Swap i-k components of mu
+        f64 tmp = mu[k];
+        mu[k] = mu[i];
+        mu[i] = tmp;
+        // Transpose elimination
+        mu[i] -= daocp_dot(J+1, mu+i+1, m-i-1);
+        // Advance J pointer
+        J += m-i;
+    }
 }
 
 void daocp_daxpy(const f64* __restrict__ x, f64* __restrict__ y, f64 a, u32 n) {

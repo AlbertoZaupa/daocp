@@ -70,6 +70,7 @@ typedef struct {
     u32* cnu;
     u32* rho;
     u32* crho;
+    u32* m;
     u32 nx_tot;
     u32 nu_tot;
     u32 nb_tot;
@@ -91,6 +92,7 @@ typedef struct {
     u32 singular;
     u32 singular_idx;
 
+    f64** J;
     f64* H;
     f64* h;
     f64* tmp1;
@@ -157,7 +159,8 @@ void daocp_fma_mv_temporal_support(f64* y, const f64* A, const f64* x, f64 alpha
 void daocp_fma_mv_t(f64* y, const f64* A, const f64* x, u32 ny, u32 nx, u32 stride);
 void daocp_fma_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
 void daocp_fms_mm_nt(f64* C, f64* A, f64* B, u32 nr, u32 nc, u32 k, u32 ostride);
-u32 daocp_gaussian_elimination(f64* A, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);
+u32 daocp_gaussian_elimination(f64* A, f64* J, f64* tmp, u32 nr, u32 nc, u32 nctot, u32 R);
+void daocp_GE_transpose(f64* J, f64* mu, u32 m, u32 rho);
 void daocp_daxpy(const f64* x, f64* y, f64 a, u32 n);
 void daocp_negate(f64* v, u32 n);
 f64 daocp_dot(const f64* v, const f64* w, u32 n);

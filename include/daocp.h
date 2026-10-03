@@ -53,6 +53,7 @@ typedef struct {
 // Solution data
 typedef struct {
     struct blasfeo_dvec* ux;
+    f64** eta;
 } daocp_sol;
 
 // Constraint selection heuristic
