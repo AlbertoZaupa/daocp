@@ -396,6 +396,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     c_ptr += (N + 1) * sizeof(daocp_constraint_type*);
     wrk->as.constraint_status = (u32**) c_ptr;
     c_ptr += (N + 1) * sizeof(u32*);
+    wrk->J = (f64**) c_ptr;
+    c_ptr += N * sizeof(f64*);
 
     f64* u_memory = (f64*) c_ptr;
     c_ptr += nu_tot * sizeof(f64);
@@ -458,6 +460,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     c_ptr += (size_t) W_stride * nu_tot * sizeof(f64);
     wrk->Me = (f64*) c_ptr;
     c_ptr += (size_t) W_stride * max_eta * sizeof(f64);
+    wrk->J[N-1] = (f64*) c_ptr;
+    c_ptr += (size_t) max_eta * ne_tot * sizeof(f64);
     wrk->H = (f64*) c_ptr;
     c_ptr += (size_t) ne_tot * max_nx * sizeof(f64);
     wrk->h = (f64*) c_ptr;
@@ -488,6 +492,8 @@ void daocp_workspace_memory_assign(daocp_dims* dims, daocp_qp* qp, void* memory)
     wrk->rho = (u32*) c_ptr;
     c_ptr += (size_t) N * sizeof(u32);
     wrk->crho = (u32*) c_ptr;
+    c_ptr += (size_t) N * sizeof(u32);
+    wrk->m = (u32*) c_ptr;
     c_ptr += (size_t) N * sizeof(u32);
     wrk->xi_sign = (u32*) c_ptr;
     c_ptr += (size_t) W_stride * sizeof(u32);

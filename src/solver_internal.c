@@ -963,7 +963,11 @@ void daocp_retrieve_sol(daocp_workspace* wrk, daocp_sol* sol) {
     // Retrieve inequality multipliers.
     for (u32 i=0; i<wrk->as.n_active; ++i) {
         daocp_constraint* c = wrk->as.xi2con + i;
-        sol->lam[c->t][c->idx] = wrk->xi[i];
+        u32 cidx = 0;
+        if (c->type == DAOCP_BOUND_U) cidx = c->idx;
+        else if (c->type == DAOCP_BOUND_X) cidx = dims->nbu[c->t] + c->idx;
+        else cidx = dims->nbu[c->t] + dims->nbx[c->t] + c->idx;
+        sol->lam[c->t][cidx] = wrk->xi[i];
     }
     // Retrieve equality multipliers.
     daocp_reconstruct_eqcon_dual(wrk, sol);
