@@ -30,6 +30,8 @@ This repository implements a dual active-set solver for Quadratic Programs (QPs)
 
 The solver is a C library, with only the linear algebra backend `blasfeo` as an external dependency. At the moment the solver can be used from Python (steps below), and in C from its native API. Have a look at `examples/python/di.py` to see how to formulate and solve OCPs and use DAOCP in a Model Predictive Control setting.
 
+Our solution method is described in [this arXiv preprint](https://arxiv.org/abs/2609.33451). The underlying dual active set algorithm is heavily inspired by [DAQP](https://github.com/darnstrom/daqp).
+
 ## Installation
 
 If you haven't cloned the repository yet, run:
@@ -60,7 +62,7 @@ Now you are ready to build the solver, as well as the Python wrapper to run the 
 
 ## Running the examples
 
-3 examples are currently available to test and time the solver:
+Examples to test and time the solver include (you can find more in `examples/python`):
 
 - `examples/python/di.py`: standard double integrator regulation problem.
 - `examples/python/atlas.py`: stabilization of a humanoid robot model.
@@ -76,4 +78,16 @@ Then you can just run (from the top level directory):
 
 ```sh
 python examples/python/di.py
+```
+
+# Citing DAOCP
+If you find DAOCP useful, you can cite our work through
+```bibtex
+@article{daocp,
+  title   = {{DAOCP}: a dual active set solver for optimal control problems},
+  author  = {Zaupa, Alberto and Erickson, Samuel and Johansson, Mikael},
+  journal = {arXiv preprint arXiv:2609.33451},
+  year    = {2026},
+  doi     = {10.48550/arXiv.2609.33451}
+}
 ```
