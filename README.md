@@ -80,6 +80,12 @@ Then you can just run (from the top level directory):
 python examples/python/di.py
 ```
 
+# Benchmarks
+You can find the three benchmarks described in our paper in the following repositories:
+- [Atlas benchmark](https://github.com/AlbertoZaupa/icra2027_atlasbench)
+- [Quadruped benchmark](https://github.com/AlbertoZaupa/dfki-quad-daocp)
+- [Quadrotor benchmark](https://github.com/AlbertoZaupa/icra2027_quadbench)
+
 # Citing DAOCP
 If you find DAOCP useful, you can cite our work through
 ```bibtex
