@@ -34,7 +34,7 @@ Our solution method is described in [this arXiv preprint](https://arxiv.org/abs/
 
 ## Installation
 
-If you haven't cloned the repository yet, run:
+These instructions describe how to install the DAOCP python wrapper. If you haven't cloned the repository yet, run:
 
 ```sh
 git clone https://github.com/AlbertoZaupa/daocp.git --recurse-submodules
@@ -46,19 +46,31 @@ Otherwise, make sure you clone the `blasfeo` source code by running:
 git submodule update --init
 ```
 
+Before starting the build process, create/select a python interepreter and install
+the required dependencies
+```sh
+pip install -r requirements.txt
+```
+
 Now you need to set the target CPU architecture for `blasfeo` to build against. A few examples:
 
 - If you have an Apple Silicon chip: `ARMV8A_APPLE_M1`.
 - If you have an Intel chip (unless quite old): `X64_INTEL_HASWELL`.
+- Otherwise select `GENERIC`
 
 You may look into `blasfeo/Makefile.rule` to see the list of available targets.
 Create a `config.mk` file in the top-level directory and write the line:
-
+`
 ```makefile
 BLASFEO_TARGET=YOUR_TARGET
 ```
 
 Now you are ready to build the solver, as well as the Python wrapper to run the examples. Simply run `make` from the top-level directory (use `make clean` if you want to delete your installation).
+
+You can install DAOCP as a module available globally for your python interpreter by running
+```sh
+python -m pip install --no-build-isolation ./interfaces/python
+```
 
 ## Running the examples
 

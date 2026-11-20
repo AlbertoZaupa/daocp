@@ -4,3 +4,5 @@ lib/*
 build/*
 examples/python/__pycache__/*
 .vscode
+*build*
+*.egg-info*
